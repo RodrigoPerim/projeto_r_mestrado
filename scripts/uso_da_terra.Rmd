@@ -1,0 +1,1123 @@
+---
+title: "geobr_e_mapbiomas"
+author: "Rodrigo Perim"
+date: "2025-12-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(geobr)
+library(sf)
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(terra)
+```
+
+```{r}
+# --- 1. DEFINIÇÃO DO QUADRANTE (SEU BOUNDING BOX) ---
+# Coordenadas que definem o quadrante de corte
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <- -1.6058
+
+# Cria o objeto de caixa delimitadora (Bounding Box)
+# CRS inicial 4326 (WGS 84)
+quadrante_bbox_4326 <- sf::st_bbox(
+  c(
+    xmin = min_lon,
+    ymin = min_lat,
+    xmax = max_lon,
+    ymax = max_lat
+  ),
+  crs = 4326
+)
+
+cat("✅ Quadrante de corte definido (CRS 4326).\n\n")
+
+# --- 2. DOWNLOAD DOS DADOS DE TERRAS INDÍGENAS (geobr) ---
+
+# Baixa todas as Terras Indígenas do Brasil.
+# O geobr tipicamente retorna os dados em CRS 4674 (SIRGAS 2000).
+cat("⬇️ Baixando dados de Terras Indígenas do Brasil (ano 2023)...\n")
+ti_brasil <- geobr::read_indigenous_land(date = 201907)
+
+# Identifica o CRS alvo dos dados do geobr (para garantir a reprojeção)
+crs_alvo <- sf::st_crs(ti_brasil)
+cat(paste0("CRS dos dados de TI: ", crs_alvo$epsg, "\n\n"))
+
+
+# --- 3. REPROJEÇÃO E CORTE ---
+
+# Reprojetamos o Bounding Box para o CRS 4674 (SIRGAS 2000),
+# que é o mesmo CRS dos dados baixados pelo geobr.
+quadrante_bbox_reprojetado <- quadrante_bbox_4326 %>%
+  sf::st_as_sfc() %>%
+  sf::st_transform(crs_alvo)
+
+cat("✅ Quadrante reprojetado com sucesso para o CRS alvo.\n\n")
+
+# O erro "Loop 0 edge 0 crosses" é resolvido desabilitando o motor S2 temporariamente.
+sf::sf_use_s2(FALSE)
+cat("⚠️ Motor S2 desativado para evitar erros de topologia na operação de corte...\n")
+
+# Realiza o corte espacial
+ti_no_quadrante <- ti_brasil %>%
+  sf::st_crop(quadrante_bbox_reprojetado)
+
+# Remove linhas onde a geometria foi cortada e ficou vazia (geom_empty)
+ti_no_quadrante_limpo <- ti_no_quadrante %>%
+  filter(!st_is_empty(.))
+
+# Reabilita o motor S2 (boa prática)
+sf::sf_use_s2(TRUE)
+cat("✅ Motor S2 reativado.\n")
+
+
+# --- 4. EXIBIÇÃO E EXPORTAÇÃO DO RESULTADO ---
+
+cat("\n--- Resultado Final: Terras Indígenas no Quadrante ---\n")
+# Exibe a estrutura dos dados (as primeiras linhas e colunas)
+print(ti_no_quadrante_limpo) 
+
+cat(paste0("\nTotal de Terras Indígenas (ou partes) encontradas no quadrante: ", 
+           nrow(ti_no_quadrante_limpo), "\n"))
+
+# # Salva o resultado filtrado em um arquivo RDS para uso posterior
+ readr::write_rds(ti_no_quadrante_limpo, "../data/indigena_no_quadrante.rds")
+ cat("\nDados filtrados salvos em '../data/indigena_no_quadrante.rds'.\n")
+
+
+
+```
+
+```{r}
+
+################ MAPA DO BRASIL + QUADRANTE ##############
+
+
+
+library(ggplot2)
+library(geobr)
+library(sf)
+library(dplyr)
+
+# 1. Carregar os dados geográficos
+brasil <- read_country(showProgress = FALSE)
+estados <- read_state(showProgress = FALSE)
+
+# 2. Quadrante de estudo (Mato Grosso/Pará)
+quadrante_estudo <- data.frame(
+  xmin = -59.7700, xmax = -49.8361,
+  ymin = -12.3561, ymax = -1.6058
+)
+
+# 3. Gerar o mapa com eixos forçados
+mapa_localizacao_v2 <- ggplot() +
+  geom_sf(data = brasil, fill = "grey95", color = "grey70") +
+  geom_sf(data = estados, fill = "transparent", color = "bisque4", size = 0.05) +
+  
+  # O Quadrante em Verde (Referência: image_2581c5.png)
+  geom_rect(data = quadrante_estudo, 
+            aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+            fill = "darkseagreen", color = "bisque4", alpha = 0.8, linewidth = 0.5) +
+  
+  # FORÇANDO A POSIÇÃO: Usamos guides para garantir que o eixo apareça onde queremos
+  # Definimos as escalas e dizemos explicitamente que a posição é top/right
+  scale_x_continuous(position = "top", breaks = seq(-70, -30, 10)) +
+  scale_y_continuous(position = "right", breaks = seq(-30, 10, 10)) +
+  
+  # Estética e Refinamento
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    axis.title = element_blank(),
+    axis.text = element_text(size = 10, color = "black", face = "bold"), # Negrito para facilitar leitura
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm")
+  ) +
+  
+  # Mantendo o enquadramento do Brasil
+  coord_sf(xlim = c(-75, -33), ylim = c(-35, 7))
+
+# Visualizar
+print(mapa_localizacao_v2)
+
+# Salvar com DPI alto para a dissertação
+# ggsave("mapa_localizacao_final_UNESP.png", mapa_localizacao_v2, width = 7, height = 7, dpi = 300)ight = 6, dpi = 300)
+```
+
+
+```{r}
+# --- 1. DEFINIÇÃO DO QUADRANTE (SEU BOUNDING BOX E GRID) ---
+
+# # Coordenadas que definem o quadrante de corte
+# min_lon <- -59.7700
+# max_lon <- -49.8361
+# min_lat <- -12.3561
+# max_lat <- -1.6058
+# dist_grid <- 0.20 
+# 
+# # Cria o objeto de caixa delimitadora (Bounding Box)
+# quadrante_bbox_4326 <- sf::st_bbox(
+#   c(
+#     xmin = min_lon, 
+#     ymin = min_lat, 
+#     xmax = max_lon, 
+#     ymax = max_lat
+#   ), 
+#   crs = 4326 # WGS 84
+# )
+# 
+# # Cria a grade de pontos original do seu projeto (para o plot de fundo)
+# grid_quadrante <- expand.grid(
+#   longitude = seq(min_lon, max_lon, dist_grid),
+#   latitude = seq(min_lat, max_lat, dist_grid)
+# )
+# 
+# cat("✅ Quadrante de corte e Grid definidos (CRS 4326).\n\n")
+# 
+# # --- 2. DOWNLOAD DOS DADOS DE UNIDADES DE CONSERVAÇÃO (geobr) ---
+# 
+# # Usa a função read_conservation_units()
+# # O geobr tipicamente retorna os dados em CRS 4674 (SIRGAS 2000).
+# cat("⬇️ Baixando dados de Unidades de Conservação (UCs) do Brasil (pode demorar um pouco)...\n")
+# ucs_brasil <- geobr::read_conservation_units(date = 201909)
+# 
+# # Identifica o CRS alvo dos dados do geobr (para garantir a reprojeção)
+# crs_alvo <- sf::st_crs(ucs_brasil)
+# cat(paste0("CRS dos dados de UCs: ", crs_alvo$epsg, "\n\n"))
+# 
+
+# --- 3. REPROJEÇÃO E CORTE ---
+
+# Reprojetamos o Bounding Box para o CRS 4674 (SIRGAS 2000)
+quadrante_bbox_reprojetado <- quadrante_bbox_4326 %>%
+  sf::st_as_sfc() %>%
+  sf::st_transform(crs_alvo)
+
+cat("✅ Quadrante reprojetado com sucesso para o CRS alvo.\n\n")
+
+# Desabilita o motor S2 temporariamente para evitar erros de topologia
+sf::sf_use_s2(FALSE)
+cat("⚠️ Motor S2 desativado para evitar erros de topologia na operação de corte...\n")
+
+# Realiza o corte espacial (st_crop)
+ucs_no_quadrante <- ucs_brasil %>%
+  sf::st_crop(quadrante_bbox_reprojetado)
+
+# Remove linhas onde a geometria foi cortada e ficou vazia (geom_empty)
+unid.conservacao_no_quadrante <- ucs_no_quadrante %>%
+  filter(!st_is_empty(.))
+
+# Reabilita o motor S2 (boa prática)
+sf::sf_use_s2(TRUE)
+cat("✅ Motor S2 reativado.\n")
+
+
+# --- 4. EXIBIÇÃO E EXPORTAÇÃO DO RESULTADO ---
+
+cat("\n--- Resultado Final: Unidades de Conservação no Quadrante ---\n")
+# Exibe a estrutura dos dados
+print(unid.conservacao_no_quadrante) 
+
+cat(paste0("\nTotal de UCs (ou partes) encontradas no quadrante: ", 
+           nrow(unid.conservacao_no_quadrante), "\n"))
+
+# Salva o resultado filtrado em um arquivo RDS para uso posterior
+readr::write_rds(unid.conservacao_no_quadrante, "../data/unid.conservacao_no_quadrante.rds")
+cat("\nDados filtrados salvos em '../data/unid.conservacao_no_quadrante.rds'.\n")
+
+
+```
+
+
+
+```{r}
+
+
+# --- 1. CARREGAR O ARQUIVO LOCAL ---
+# Substitua o caminho abaixo pelo local onde você salvou o arquivo .tif
+# Dica: No Windows, use barras normais (/) ou duplas (\\)
+caminho_arquivo <- "../data-raw/mapa_uso_solo_mapbiomas.tif"
+
+message(">> Carregando o arquivo TIF local...")
+raster_br_local <- terra::rast(caminho_arquivo)
+
+# --- 2. DEFINIR SEU QUADRANTE (Igual ao seu script original) ---
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <- -1.6058
+dist_grid <- 0.20 
+
+# Cria a caixa em Latitude/Longitude (WGS84)
+bbox_wgs84 <- sf::st_bbox(
+  c(xmin = min_lon, ymin = min_lat, xmax = max_lon, ymax = max_lat),
+  crs = 4326
+) |> st_as_sfc()
+
+# --- 3. O PASSO CRUCIAL: PROJEÇÃO ---
+# O MapBiomas NÃO usa Lat/Lon. Se tentar cortar direto, vai dar erro ou sair vazio.
+# Temos que transformar a SUA CAIXA para o sistema de coordenadas do ARQUIVO.
+
+# Pega o CRS do arquivo que você carregou
+crs_do_arquivo <- terra::crs(raster_br_local)
+
+# Transforma sua caixa para "conversar" com o arquivo
+bbox_transformada <- sf::st_transform(bbox_wgs84, crs = crs_do_arquivo)
+
+message(">> Recortando a área de interesse...")
+# Agora sim, cortamos o arquivo gigante usando a caixa transformada
+mapbiomas_crop <- terra::crop(raster_br_local, bbox_transformada)
+
+# --- 4. VISUALIZAR PARA CONFERIR ---
+plot(mapbiomas_crop, main = "Seu Recorte do MapBiomas")
+plot(st_geometry(bbox_transformada), add = TRUE, border = "red")
+
+# --- 5. EXTRAIR DADOS (Se quiser cruzar com seu grid de pontos) ---
+# Se você quiser extrair os valores para aqueles pontos do seu grid de 0.20 graus:
+
+# Recria o grid de pontos
+grid_pontos <- expand.grid(
+  longitude = seq(min_lon, max_lon, dist_grid),
+  latitude = seq(min_lat, max_lat, dist_grid)
+) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+# Transforma os pontos para o CRS do mapa (para baterem espacialmente)
+grid_pontos_transf <- st_transform(grid_pontos, crs = crs_do_arquivo)
+
+# Extrai o valor do pixel embaixo de cada ponto
+valores <- terra::extract(mapbiomas_crop, grid_pontos_transf)
+
+# Junta tudo
+resultado_final <- grid_pontos |> 
+  mutate(uso_solo_codigo = valores[,2]) # A coluna 2 geralmente tem o valor da classe
+
+head(resultado_final)
+```
+```{r}
+library(sf)
+library(dplyr) # Opcional, só pra organizar
+
+# 1. Suas Coordenadas
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <-  -1.6058
+
+# 2. Criar o Polígono (Retângulo)
+# A função st_bbox cria a "caixa" e st_as_sfc transforma em geometria
+meu_retangulo <- sf::st_bbox(
+  c(xmin = min_lon, 
+    xmax = max_lon, 
+    ymin = min_lat, 
+    ymax = max_lat),
+  crs = 4326 # WGS 84 (Lat/Lon)
+) |> 
+  sf::st_as_sfc() |> 
+  sf::st_as_sf() # Transforma em objeto SF (tabela espacial)
+
+# 3. Adicionar um nome/ID (Opcional, mas bom pra ter na tabela de atributos)
+meu_retangulo <- meu_retangulo |>
+  mutate(id = 1,
+         nome = "Area_Estudo_Mestrado")
+
+# 4. Salvar como Shapefile (.shp)
+# O argumento delete_dsn = TRUE sobrescreve se já existir
+sf::st_write(meu_retangulo, "limites_meu_estudo.shp", delete_dsn = TRUE)
+
+# 5. Conferir visualmente
+plot(meu_retangulo, main = "Shapefile Criado com Sucesso!", axes = TRUE)
+```
+
+
+```{r}
+library(terra)
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+# --- 1. CONFIGURAÇÃO DO GRID MESTRE (O MESMO DO ANTERIOR) ---
+# Use as mesmas coordenadas que definimos pro XCO2 e MapBiomas
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <-  -1.6058
+resolucao_alvo <- 0.2
+
+# Cria o Molde Vazio
+grid_mestre <- terra::rast(
+  xmin = min_lon, xmax = max_lon,
+  ymin = min_lat, ymax = max_lat,
+  res = resolucao_alvo,
+  crs = "EPSG:4326"
+)
+
+message("✅ Grid Mestre carregado.")
+
+# --- 2. FUNÇÃO DE RASTERIZAÇÃO ---
+# Como vamos fazer a mesma coisa para 2 arquivos, criei uma funçãozinha
+# pra não repetir código. Ela transforma Polígono -> Raster 0.2
+rasterizar_geobr <- function(caminho_arquivo_rds, nome_var) {
+  
+  message(paste(">> Processando:", nome_var))
+  
+  # 1. Ler o arquivo SF (Vetor/Polígono)
+  dados_vetor <- readRDS(caminho_arquivo_rds) |> 
+    sf::st_transform(crs = 4326) # Garante que está em Lat/Lon
+  
+  # 2. Rasterizar ("Queimar" o polígono no grid)
+  # field = 1 -> Onde tiver polígono, vira o valor 1.
+  # background = 0 -> Onde não tiver, vira 0.
+  # touches = TRUE -> Se o polígono tocar no pixel, conta (bom pra áreas pequenas)
+  raster_gerado <- terra::rasterize(dados_vetor, grid_mestre, field = 1, background = 0, touches = TRUE)
+  
+  # 3. Converter para Tabela (Dataframe)
+  df_final <- terra::as.data.frame(raster_gerado, xy = TRUE) |> 
+    as_tibble() |> 
+    rename(
+      longitude = x,
+      latitude = y,
+      presenca = 3 # A coluna com 0 ou 1
+    ) |> 
+    # Renomeia a coluna 'presenca' para o nome que você escolheu (ex: 'indigena')
+    rename_with(~nome_var, .cols = presenca)
+  
+  return(df_final)
+}
+
+# --- 3. EXECUTAR PARA OS SEUS ARQUIVOS ---
+
+# A) Terras Indígenas
+# Troque pelo caminho do seu arquivo .rds de indígenas
+caminho_indigena <- "../data/indigena_no_quadrante.rds" 
+
+df_indigena_02 <- rasterizar_geobr(caminho_indigena, "flag_indigena")
+saveRDS(df_indigena_02, "indigena_grade_0.2.rds") # Salva
+message("✅ Indígenas: Convertido e Salvo!")
+
+
+# B) Unidades de Conservação
+# Troque pelo caminho do seu arquivo .rds de conservação
+caminho_uc <- "../data/unid.conservacao_no_quadrante.rds"
+
+df_uc_02 <- rasterizar_geobr(caminho_uc, "flag_conservacao")
+saveRDS(df_uc_02, "conservacao_grade_0.2.rds") # Salva
+message("✅ Conservação: Convertido e Salvo!")
+
+# --- 4. VISUALIZAR PARA CONFERIR ---
+# Plota lado a lado pra ver se deu certo
+p1 <- ggplot(df_indigena_02) +
+  geom_tile(aes(x = longitude, y = latitude, fill = as.factor(flag_indigena))) +
+  scale_fill_manual(values = c("0" = "gray90", "1" = "red")) +
+  coord_fixed() + labs(title = "Indígenas (Grade 0.2)", fill = "Presença") + theme_void()
+
+p2 <- ggplot(df_uc_02) +
+  geom_tile(aes(x = longitude, y = latitude, fill = as.factor(flag_conservacao))) +
+  scale_fill_manual(values = c("0" = "gray90", "1" = "green")) +
+  coord_fixed() + labs(title = "Conservação (Grade 0.2)", fill = "Presença") + theme_void()
+
+library(patchwork) # Se tiver instalado, ou plote separado
+p1 + p2
+```
+
+
+################
+################
+################
+MAPBIOMAS
+
+```{r}
+library(terra)   # A melhor para mexer com Raster
+library(sf)      # Para lidar com as coordenadas
+library(dplyr)   # Para manipular a tabela final
+library(readr)   # Para salvar o RDS
+
+# --- 1. CAMINHO DO ARQUIVO ---
+# Troque pelo local exato onde está o seu .tif baixado do MapBiomas
+caminho_tif <- "../data-raw/uso_da_terra.tif"
+
+message(">> Lendo o arquivo TIF (Isso não carrega na memória RAM, só mapeia)...")
+raster_completo <- terra::rast(caminho_tif)
+
+# Conferir se leu certo
+print(raster_completo)
+```
+
+
+```{r}
+# --- 1. CONFIGURAÇÃO INICIAL E PACOTES ---
+library(terra)
+library(sf)
+library(dplyr)
+library(ggplot2)
+
+# ⚠️ AJUSTE AQUI O CAMINHO DO SEU ARQUIVO BAIXADO
+caminho_tif_mapbiomas <- "../data-raw/uso_da_terra.tif"
+
+# Suas Coordenadas (Área de Estudo)
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <-  -1.6058
+resolucao_alvo <- 0.2 # Resolução do XCO2
+
+message("🚀 Iniciando processamento...")
+
+# --- 2. CRIAR O GRID MESTRE (O MOLDE) ---
+# Criamos um raster vazio com a grade EXATA que você quer (0.2 x 0.2 graus em WGS84)
+grid_mestre <- terra::rast(
+  xmin = min_lon, xmax = max_lon,
+  ymin = min_lat, ymax = max_lat,
+  res = resolucao_alvo,
+  crs = "EPSG:4326" # Lat/Lon
+)
+
+message("✅ Grid Mestre criado (0.2° x 0.2°).")
+
+
+# --- 3. LER E CORTAR O MAPBIOMAS (SEM ESTOURAR A MEMÓRIA) ---
+# Carrega o ponteiro do arquivo (não carrega na RAM ainda)
+raster_bruto <- terra::rast(caminho_tif_mapbiomas)
+
+# Define a caixa delimitadora em Lat/Lon
+bbox_wgs84 <- sf::st_bbox(
+  c(xmin = min_lon, ymin = min_lat, xmax = max_lon, ymax = max_lat),
+  crs = 4326
+) |> sf::st_as_sfc()
+
+# TRANSFORMAÇÃO DE PROJEÇÃO (CRUCIAL!)
+# O MapBiomas não é Lat/Lon. Precisamos descobrir a projeção dele e converter sua caixa.
+bbox_transformada <- sf::st_transform(bbox_wgs84, crs = terra::crs(raster_bruto))
+
+message("✂️  Cortando a área de interesse (Crop)...")
+raster_crop <- terra::crop(raster_bruto, bbox_transformada)
+
+
+# --- 4. OTIMIZAÇÃO DE MEMÓRIA (AGREGAÇÃO PRÉVIA) ---
+# O arquivo cropado ainda tem resolução de 30m (muito pesado).
+# Antes de reprojetar, vamos diminuir a resolução para aprox. 300m/600m.
+# Isso reduz o tamanho do arquivo em ~400x e previne o erro de memória.
+message("📉 Reduzindo resolução inicial para economizar RAM...")
+
+# fact=15 transforma pixels de 30m em ~450m. 
+# fun="modal" mantém a classe mais comum (não faz média matemática).
+raster_leve <- terra::aggregate(raster_crop, fact = 15, fun = "modal") 
+
+
+# --- 5. PADRONIZAÇÃO FINAL (ALINHAMENTO COM XCO2) ---
+message("🔄 Projetando para Lat/Lon e alinhando com a grade 0.2°...")
+
+# Passo A: Projetar para Lat/Lon (WGS84)
+raster_proj <- terra::project(raster_leve, "EPSG:4326", method = "near")
+
+# Passo B: Resample FINAL para cair exatamente na grade 0.2
+# method="mode" pega a classe dominante dentro do quadrado de 20km
+raster_final <- terra::resample(raster_proj, grid_mestre, method = "mode")
+
+
+# --- 6. CONVERTER PARA TABELA E TRADUZIR CÓDIGOS ---
+message("📝 Gerando tabela final...")
+
+df_mapbiomas <- terra::as.data.frame(raster_final, xy = TRUE) |> 
+  as_tibble() |> 
+  rename(
+    longitude = x,
+    latitude = y,
+    uso_solo_code = 3 # Pega a 3ª coluna (o valor do pixel)
+  ) |> 
+  mutate(
+    # Tradução da Legenda (Coleção MapBiomas)
+    uso_solo_nome = case_when(
+      uso_solo_code == 3  ~ "Floresta",
+      uso_solo_code == 4  ~ "Savana",
+      uso_solo_code == 15 ~ "Pastagem",
+      uso_solo_code == 39 ~ "Soja",
+      uso_solo_code == 20 ~ "Cana-de-açúcar",
+      uso_solo_code == 41 ~ "Outras Lavouras",
+      uso_solo_code == 9  ~ "Floresta Plantada",
+      uso_solo_code == 33 ~ "Rio/Lago",
+      uso_solo_code == 24 ~ "Urbano",
+      uso_solo_code == 25 ~ "Outras áreas não vegetadas",
+      TRUE ~ "Outros/Misto"
+    )
+  )
+
+# --- 7. SALVAR ---
+arquivo_saida <- "mapbiomas_FINAL_grade_0.2.rds"
+saveRDS(df_mapbiomas, arquivo_saida)
+
+message(paste("🏁 SUCESSO! Arquivo salvo:", arquivo_saida))
+print(df_mapbiomas)
+
+# --- 8. CHECK VISUAL ---
+ggplot(df_mapbiomas) +
+  geom_tile(aes(x = longitude, y = latitude, fill = uso_solo_nome)) +
+  scale_fill_brewer(palette = "Set1") + # Cores aleatórias só pra diferenciar
+  coord_fixed() +
+  labs(title = "Uso do Solo Predominante (Grade 0.2°)",
+       subtitle = "Sincronizado com dados de XCO2") +
+  theme_bw()
+```
+```{r}
+
+
+# --- 1. CARREGAR ARQUIVOS ---
+df_mapbiomas <- readRDS("mapbiomas_FINAL_grade_0.2.rds")
+df_indigena  <- readRDS("indigena_grade_0.2.rds")
+df_conserv   <- readRDS("conservacao_grade_0.2.rds")
+
+# --- 2. PREPARAR O MAPBIOMAS (SEM JOGAR DADOS FORA) ---
+# Aqui classificamos o que queremos ver especificamente.
+# O que não for Soja/Pasto/NãoVeg, vira "Outros Usos" (geralmente Floresta),
+# mas continua existindo na tabela para preencher o fundo.
+
+df_mapbiomas_preparado <- df_mapbiomas |> 
+  mutate(
+    classe_uso = case_when(
+      uso_solo_code == 15 ~ "Pastagem",
+      uso_solo_code == 39 ~ "Soja",
+      uso_solo_code == 25 ~ "Outras áreas não vegetadas",
+      uso_solo_code == 3 ~ "Floresta"
+    )
+  ) 
+  # NOTA: NÃO usamos filter() aqui. Mantemos todas as linhas/pixels.
+
+# --- 3. O GRANDE JOIN ---
+# A base é o MapBiomas (que tem todos os pixels do quadrante)
+dados_unificados <- df_mapbiomas_preparado |> 
+  left_join(df_indigena, by = c("longitude", "latitude")) |> 
+  left_join(df_conserv, by = c("longitude", "latitude")) |> 
+  
+  # Limpeza dos NAs (Se não tem match, é 0)
+  mutate(
+    flag_indigena = replace_na(flag_indigena, 0),
+    flag_conservacao = replace_na(flag_conservacao, 0)
+  )
+
+# --- 4. APLICAÇÃO DA HIERARQUIA (SUA REGRA DE OURO) ---
+dados_finais <- dados_unificados |> 
+  mutate(
+    categoria_mapa = case_when(
+      # 1º: É Indígena? (Manda em tudo)
+      flag_indigena == 1 ~ "Terra Indígena",
+      
+      # 2º: Não é Indígena, mas é UC?
+      flag_conservacao == 1 ~ "Unidade de Conservação",
+      
+      # 3º: Não é protegido? Então vale o MapBiomas (Sobra o fundo)
+      TRUE ~ classe_uso
+    )
+  )
+
+# --- 5. SALVAR ---
+saveRDS(dados_finais, "../data/BASE_FINAL_MAPPING_COMPLETO.rds")
+
+# --- 6. VISUALIZAÇÃO PARA PROVAR QUE NÃO TEM BURACO ---
+# Vamos definir cores para tudo que pode aparecer
+cores_mapa <- c(
+  "Terra Indígena"             = "#FF8C00", # Laranja
+  "Unidade de Conservação"     = "#40E0D0", # Turquesa
+  "Pastagem"                   = "#F4A460", # Marrom Claro
+  "Soja"                       = "#C71585", # Roxo
+  "Outras áreas não vegetadas" = "#BEBEBE", # Cinza
+  "Floresta"                   = "#228B22", # Verde
+  "Outros Usos"                = "#556B2F"  # Verde Oliva
+)
+
+ggplot(dados_finais) +
+  geom_tile(aes(x = longitude, y = latitude, fill = categoria_mapa)) +
+  scale_fill_manual(values = cores_mapa) +
+  coord_fixed() +
+  theme_void() +
+  labs(title = "Mapa de Ocupação Territorial Completo", fill = "Categoria")
+
+# --- 7. CHECK DE INTEGRIDADE ---
+message(">> Contagem final de pixels por categoria:")
+print(table(dados_finais$categoria_mapa))
+```
+```{r}
+
+
+# --- 1. CARREGAR A BASE FINAL ---
+# (Certifique-se de usar o arquivo COMPLETO que geramos por último)
+dados_final <- readRDS("BASE_FINAL_MAPPING_COMPLETO.rds")
+
+# --- 2. DEFINIR A PALETA DE CORES COMPLETA ---
+# Adicionei aqui todas as classes que aparecem no seu mapa final
+cores_prioridade <- c(
+  # Áreas Protegidas (As Prioridades)
+  "Terra Indígena"             = "darkolivegreen2", # Laranja Forte
+  "Unidade de Conservação"     = "darkseagreen2", # Turquesa
+  
+  # Uso do Solo (O Fundo)
+  "Floresta"                   = "#228B22", # Verde
+  "Pastagem"                   = "coral3", # Marrom claro
+  "Soja"                       = "darkorchid3", # Roxo
+  "Outras áreas não vegetadas" = "black", # Cinza
+  "Outros Usos"                = "black"  # Verde Oliva (O que sobrou)
+)
+
+# --- 3. PLOTAR ---
+# Note que usamos direto a coluna 'categoria_mapa' que já está pronta no RDS
+ggplot(dados_final) +
+  geom_tile(aes(x = longitude, y = latitude, fill = categoria_mapa)) +
+  
+  scale_fill_manual(values = cores_prioridade, na.value = "grey") + 
+  
+  coord_fixed() +
+  theme_minimal() + # Tema limpo
+  
+  labs(
+    title = "Configuração Territorial Final",
+    subtitle = "Prioridade de visualização: Indígena > UC > Uso do Solo",
+    fill = "Categoria",
+    x = NULL, y = NULL
+  ) +
+  
+  theme(
+    legend.position = "right",
+    panel.grid = element_blank(), # Remove grades de fundo
+    axis.text = element_blank(),  # Remove números dos eixos para limpar
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+# Se quiser salvar:
+# ggsave("mapa_prioridade_final.png", width = 10, height = 8, dpi = 300, bg = "white")
+```
+
+```{r}
+
+############## MAPA USO DO SOLO ###################
+
+
+library(dplyr)
+library(ggplot2)
+library(ggspatial) 
+library(sf)
+
+# --- 1. TRATAR DADOS ---
+dados_final_tratados <- dados_final %>%
+  mutate(
+    categoria_mapa = as.character(categoria_mapa),
+    categoria_mapa = case_when(
+      is.na(categoria_mapa) ~ "Unidentified Use",
+      categoria_mapa == "Terra Indígena" ~ "Indigenous Land",
+      categoria_mapa == "Unidade de Conservação" ~ "Protected Area",
+      categoria_mapa == "Floresta" ~ "Forest",
+      categoria_mapa == "Pastagem" ~ "Pasture",
+      categoria_mapa == "Soja" ~ "Soybean",
+      categoria_mapa == "Outras áreas não vegetadas" ~ "Non-vegetated areas",
+      categoria_mapa == "Outros Usos" ~ "Other uses",
+      TRUE ~ categoria_mapa
+    )
+  )
+
+dados_sf <- st_as_sf(dados_final_tratados, 
+                     coords = c("longitude", "latitude"), 
+                     crs = 4326, 
+                     remove = FALSE)
+
+saveRDS(dados_sf, "dados_sf.rds")
+
+# --- 2. PALETA DE CORES ---
+cores_en <- c(
+  "Indigenous Land"     = "darkolivegreen2", 
+  "Protected Area"      = "darkseagreen3", 
+  "Forest"              = "#228B22", 
+  "Pasture"             = "coral3", 
+  "Soybean"             = "darkorchid3", 
+  "Non-vegetated areas" = "black", 
+  "Other uses"          = "black", 
+  "Unidentified Use"    = "bisque4"  
+)
+
+# --- 3. PLOTAR ---
+mapa_final_clean <- ggplot(dados_sf) +
+  geom_tile(aes(x = longitude, y = latitude, fill = categoria_mapa)) +
+  scale_fill_manual(values = cores_en) +
+  
+  scale_x_continuous(position = "top", breaks = seq(-60, -50, 2)) +
+  scale_y_continuous(position = "right", breaks = seq(-12, -2, 2)) +
+  
+  coord_sf(xlim = c(-60.5, -48.8), ylim = c(-12.5, -1.0), datum = st_crs(4326)) +
+  
+  # ROSA DOS VENTOS: Modelo Minimalista e discreto
+  annotation_north_arrow(location = "tr", which_north = "true", 
+                         pad_x = unit(0.05, "in"), pad_y = unit(0.6, "in"),
+                         height = unit(0.65, "cm"), width = unit(0.65, "cm"), 
+                         style = north_arrow_orienteering(
+                           text_size = 6,
+                           line_width = 1
+                         )) +
+  
+  # ESCALA DE 600KM
+  annotation_scale(location = "br", width_hint = 0.5, 
+                   pad_x = unit(0.395, "in"), pad_y = unit(0.1, "in"), 
+                   style = "ticks") +
+  
+  theme_minimal() +
+  labs(x = "Longitude", y = "Latitude") +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 8, face = "bold", color = "black"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    plot.margin = unit(c(1, 1, 1, 1), "cm")
+  )
+
+# Visualizar
+print(mapa_final_clean)
+```
+```{r}
+
+############# LEGENDA ################
+
+
+library(dplyr)
+library(ggplot2)
+library(ggspatial) 
+library(sf)
+
+# --- 1. TRATAR OS DADOS E TRADUZIR ---
+dados_final_tratados <- dados_final %>%
+  mutate(
+    categoria_mapa = as.character(categoria_mapa),
+    categoria_mapa = case_when(
+      is.na(categoria_mapa) ~ "Unidentified Use",
+      categoria_mapa == "Terra Indígena" ~ "Indigenous Land",
+      categoria_mapa == "Unidade de Conservação" ~ "Protected Area",
+      categoria_mapa == "Floresta" ~ "Forest",
+      categoria_mapa == "Pastagem" ~ "Pasture",
+      categoria_mapa == "Soja" ~ "Soybean",
+      categoria_mapa == "Outras áreas não vegetadas" ~ "Non-vegetated areas",
+      categoria_mapa == "Outros Usos" ~ "Other uses",
+      TRUE ~ categoria_mapa
+    )
+  )
+
+# --- 2. O PULO DO GATO: TRANSFORMAR EM OBJETO ESPACIAL ---
+# Isso avisa ao R que longitude/latitude são coordenadas geográficas (CRS 4326)
+# remove = FALSE mantém as colunas originais para o geom_tile funcionar
+dados_sf <- st_as_sf(dados_final_tratados, 
+                     coords = c("longitude", "latitude"), 
+                     crs = 4326, 
+                     remove = FALSE)
+
+# --- 3. DEFINIR A PALETA ---
+cores_en <- c(
+  "Indigenous Land"     = "darkolivegreen2", 
+  "Protected Area"      = "darkseagreen3", 
+  "Forest"              = "#228B22", 
+  "Pasture"             = "coral3", 
+  "Soybean"             = "darkorchid3", 
+  "Non-vegetated areas" = "black", 
+  "Other uses"          = "black",
+  "Unidentified Use"    = "bisque4"  
+)
+
+# --- 4. PLOTAR ---
+mapa_completo <- ggplot(dados_sf) +
+  # Usamos geom_tile normalmente
+  geom_tile(aes(x = longitude, y = latitude, fill = categoria_mapa)) +
+  scale_fill_manual(values = cores_en) +
+  
+  # Coordenadas no Topo e Direita (conforme você pediu)
+  scale_x_continuous(position = "top") +
+  scale_y_continuous(position = "right") +
+  
+  # Forçar o uso de coordenadas espaciais
+  coord_sf(crs = 4326, datum = 4326) +
+  
+  # Agora a Rosa dos Ventos e Escala vão funcionar!
+  annotation_scale(location = "bl", width_hint = 0.5, style = "ticks") +
+  annotation_north_arrow(location = "br", which_north = "true", 
+                         style = north_arrow_fancy_orienteering()) +
+  
+  theme_minimal() +
+  labs(fill = "Land Use", x = "Longitude", y = "Latitude") +
+  theme(
+    legend.position = "right",
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 10, face = "bold", color = "black"),
+    legend.text = element_text(size = 11),
+    legend.title = element_text(size = 13, face = "bold"),
+    plot.margin = unit(c(1, 1, 0.5, 0.5), "cm")
+  )
+
+# Visualizar
+print(mapa_completo)
+```
+
+
+
+
+```{r}
+# Instale o geobr se ainda não tiver: install.packages("geobr")
+library(dplyr)
+library(ggplot2)
+library(ggspatial) 
+library(sf)
+library(geobr) # NOVO: Para baixar os limites dos estados
+
+# --- 1. TRATAR DADOS ---
+# (Seu código original mantido intacto)
+dados_final_tratados <- dados_final %>%
+  mutate(
+    categoria_mapa = as.character(categoria_mapa),
+    categoria_mapa = case_when(
+      is.na(categoria_mapa) ~ "Unidentified Use",
+      categoria_mapa == "Terra Indígena" ~ "Indigenous Land",
+      categoria_mapa == "Unidade de Conservação" ~ "Protected Area",
+      categoria_mapa == "Floresta" ~ "Forest",
+      categoria_mapa == "Pastagem" ~ "Pasture",
+      categoria_mapa == "Soja" ~ "Soybean",
+      categoria_mapa == "Outras áreas não vegetadas" ~ "Non-vegetated areas",
+      categoria_mapa == "Outros Usos" ~ "Other uses",
+      TRUE ~ categoria_mapa
+    )
+  )
+
+dados_sf <- st_as_sf(dados_final_tratados, 
+                     coords = c("longitude", "latitude"), 
+                     crs = 4326, 
+                     remove = FALSE)
+
+# NOVO: Baixar os polígonos de todos os estados do Brasil
+br_estados <- read_state(code_state = "all", year = 2020, showProgress = FALSE)
+
+
+# --- 2. PALETA DE CORES ---
+cores_en <- c(
+  "Indigenous Land"     = "darkolivegreen2", 
+  "Protected Area"      = "darkseagreen3", 
+  "Forest"              = "#228B22", 
+  "Pasture"             = "coral3", 
+  "Soybean"             = "darkorchid3", 
+  "Non-vegetated areas" = "black", 
+  "Other uses"          = "black", 
+  "Unidentified Use"    = "bisque4"  
+)
+
+# --- 3. PLOTAR ---
+mapa_final_clean <- ggplot() +
+  
+  # NOVO: 1ª Camada - O fundo dos estados em cinza
+  geom_sf(data = br_estados, fill = "gray88", color = "white", linewidth = 0.4) +
+  
+  # A sua malha de dados (geom_tile)
+  geom_tile(data = dados_sf, aes(x = longitude, y = latitude, fill = categoria_mapa)) +
+  scale_fill_manual(values = cores_en) +
+  
+  # NOVO: 2ª Camada de estados - Apenas as bordas por cima dos dados
+  geom_sf(data = br_estados, fill = NA, color = "white", linewidth = 0.4) +
+  
+  # Eixos no topo e na direita (igual ao seu)
+  scale_x_continuous(position = "top", breaks = seq(-60, -50, 2)) +
+  scale_y_continuous(position = "right", breaks = seq(-12, -2, 2)) +
+  
+  # Limites da janela e sistema de coordenadas
+  coord_sf(xlim = c(-60.5, -48.8), ylim = c(-12.5, -1.0), datum = st_crs(4326)) +
+  
+  # ROSA DOS VENTOS
+  annotation_north_arrow(location = "tr", which_north = "true", 
+                         pad_x = unit(0.13, "in"), pad_y = unit(0.6, "in"),
+                         height = unit(0.70, "cm"), width = unit(0.75, "cm"), 
+                         style = north_arrow_orienteering(
+                           text_size = 6,
+                           line_width = 1
+                         )) +
+  
+ # ESCALA DE MAPA (Estilo Ticks Customizado)
+  annotation_scale(
+    location = "br", 
+    width_hint = 0.4,         # Define a largura aproximada para forçar as quebras (ex: 0, 50, 100)
+    style = "ticks",          # Mantém o estilo de linhas em vez de blocos
+    line_col = "black",       # Cor da linha
+    text_col = "black",       # Cor do texto
+    line_width = 1.2,         # Deixa a linha principal e os ticks mais grossos (igual ao QGIS)
+    text_cex = 0.7,           # Aumenta um pouco o tamanho da fonte da escala
+    text_face = "bold",       # Deixa os números em negrito para destacar no fundo azul
+    pad_x = unit(0.6, "in"),  # Distância da borda direita
+    pad_y = unit(0.15, "in")   # Distância da borda inferior
+  ) +
+  
+  # TEMA E ESTÉTICA GERAL
+  theme_minimal() +
+  labs(x = "Longitude", y = "Latitude") +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    axis.text = element_text(size = 8, face = "bold", color = "black"),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    
+    # NOVO: Cor de fundo do painel para simular o oceano azul (como na imagem)
+    panel.background = element_rect(fill = "#5eb7eb", color = NA), 
+    
+    plot.margin = unit(c(1, 1, 1, 1), "cm")
+  )
+
+# Visualizar
+print(mapa_final_clean)
+```
+
+
+```{r}
+# Atualizando o mapa para exibir a legenda formatada
+mapa_com_legenda <- mapa_final_clean +
+  
+  # 1. Ajusta o título principal da legenda
+  scale_fill_manual(
+    name = "Land Use Categories",
+    values = cores_en
+  ) +
+  
+  # 2. Formatação estética da caixa e dos textos
+  theme(
+    # Posição: "right" coloca do lado de fora. 
+    # Se quiser colocar dentro do mapa, use coordenadas, ex: c(0.85, 0.2)
+    legend.position = "right", 
+    
+    # Cria a caixa branca com borda preta exatamente como na imagem
+    legend.background = element_rect(fill = "white", color = "black", linewidth = 0.8),
+    
+    # Espaçamento interno (respiro) entre o texto e a borda da caixa
+    legend.margin = margin(t = 10, r = 15, b = 10, l = 10),
+    
+    # Título em negrito e com tamanho maior
+    legend.title = element_text(face = "bold", size = 12, color = "black"),
+    
+    # Texto das categorias (classes de uso)
+    legend.text = element_text(size = 10, color = "black"),
+    
+    # Remove o fundo cinza padrão do ggplot atrás dos quadrados de cor
+    legend.key = element_rect(fill = "white", color = NA),
+    
+    # Define o tamanho do quadrado de cor (altura e largura)
+    legend.key.size = unit(0.6, "cm")
+  ) +
+  
+  # 3. Força os ícones de preenchimento (fill) a ficarem perfeitamente quadrados
+  guides(
+    fill = guide_legend(
+      title.position = "top", # Garante que o título fique em cima das categorias
+      override.aes = list(color = "black", linewidth = 0.2) # Coloca uma bordinha fina nos quadrados de cor
+    )
+  )
+
+# Exibe o mapa final com a legenda
+print(mapa_com_legenda)
+```
+
+
+
+
+
+
+
+```{r}
+library(ggplot2)
+library(sf)
+library(geobr)
+
+# 1. Baixar o contorno dos estados do Brasil
+# (Caso já tenha rodado no script anterior, não precisa rodar de novo)
+br_estados <- read_state(code_state = "all", year = 2020, showProgress = FALSE)
+
+# 2. Gerar o Mapa de Localização
+mapa_localizacao <- ggplot() +
+  # Camada 1: Mapa do Brasil (Fundo cinza claro, bordas mais escuras)
+  geom_sf(data = br_estados, fill = "gray95", color = "gray50", linewidth = 0.4) +
+  
+  # Camada 2: O Retângulo da Área de Estudo
+  # Usando as coordenadas exatas do seu quadrante de interesse
+  annotate(
+    "rect", 
+    xmin = -59.7700, xmax = -49.8361,  # Longitude (Oeste - Leste)
+    ymin = -12.3561, ymax = -1.6058,   # Latitude (Sul - Norte)
+    fill = "darkgreen",              # Cor do preenchimento
+    alpha = 0.5,                       # Transparência (0 = invisível, 1 = sólido)
+    color = "darkgreen",               # Cor da linha da borda do retângulo
+    linewidth = 0.8                    # Espessura da borda do retângulo
+  ) +
+  
+  # Travar as coordenadas para evitar distorção e mostrar o Brasil inteiro
+  # Expand = FALSE garante que o gráfico não crie margens brancas gigantes
+  coord_sf(xlim = c(-74, -34), ylim = c(-34, 5), expand = FALSE) +
+  
+  # Estética limpa (Eixos com coordenadas, fundo branco)
+  theme_bw() +
+  labs(x = "Longitude", y = "Latitude") +
+  theme(
+    # A ÚNICA MUDANÇA ESTÁ AQUI: Desligando as linhas principais (major)
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    
+    axis.text = element_text(size = 8, color = "black"),
+    axis.title = element_text(size = 10, face = "bold"),
+    plot.margin = unit(c(0.5, 0.5, 0.5, 0.5), "cm")
+  )
+
+# Exibir o mapa
+print(mapa_localizacao)
+```
+
+
+
+
+
+```{r}
+# 1. O layout usando A, B e C 
+# A = Mapa Principal | B = Mapa do Brasil | C = Legenda
+layout_artigo <- "
+  AAAABB
+  AAAABB
+  AAAACC
+  AAAACC
+"
+
+# 2. Somando na exata ordem: A + B + C
+mapa_final_painel <- mapa_com_legenda + mapa_localizacao + guide_area() + 
+  plot_layout(
+    design = layout_artigo, 
+    guides = "collect",
+    heights = c(1.0, 1.0, 0.2, 0.2)  
+    
+    #br, br, 
+    # linhas 1-2 (mapa B) maiores; linhas 3-4 (legenda C) menores
+  )
+
+print(mapa_final_painel)
+
+# 3. Exportando direto para arquivo (IMPORTANTE)
+ggsave(
+  filename = "Figura_1_Corrigida.png", 
+  plot = mapa_final_painel,
+  width = 28,           
+  height = 18,          
+  units = "cm", 
+  dpi = 300,
+  bg = "white" # Garante o fundo branco
+)
+
+# 4. SALVAR EM ALTA RESOLUÇÃO PARA O ARTIGO (300 DPI)
+# ==============================================================================
+# As revistas costumam exigir formato TIFF ou PNG de alta qualidade.
+ggsave(
+  filename = "Figura_1_Mapa_Uso_e_Localizacao.tiff",
+  plot = mapa_final_painel, # <--- CORRIGIDO AQUI (adicionado o "i")
+  width = 28,            
+  height = 18,           
+  units = "cm",
+  dpi = 300,             
+  compression = "lzw"    
+)
+```
+

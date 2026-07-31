@@ -1,0 +1,1779 @@
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  eval = TRUE,
+  comment = "#>"
+)
+```
+
+## Carregando pacotes
+```{r}
+library(tidyverse)
+library(ggridges)
+library(ggpubr)
+library(geobr)
+library(gstat)
+library(vegan)
+library(dplyr)
+library(ggplot2)
+library(sf)
+source("../R/my-function.R")
+```
+
+#Carregando polígono do Brasil
+```{r}
+country_br <- geobr::read_country(showProgress = FALSE)
+```
+
+
+```{r}
+data_set_sif <- readr::read_rds("../data/data-set-sif-filter.rds") |> 
+  dplyr::filter(
+    quality_flag <= 1)|>
+  dplyr::mutate(
+       trimestre = paste0("T", lubridate::quarter(time))
+  ) # passar um mutate para criar a sif de análise...
+```
+
+```{r}
+data_set_sif <- data_set_sif %>%
+  mutate(
+    epoca = case_when(
+      month %in% 1:6   ~ "Jan_Jun",
+      month %in% 7:12  ~ "Jul_Dez"
+    ),
+    daily_sif757 = daily_sif757  # adiciona a coluna da variável
+  )
+
+glimpse(data_set_sif)
+```
+
+# Carregando os dados de xco2 e filtrar
+```{r}
+data_set_xco2 <- readr::read_rds("../data/data-set-xco2.rds") |>
+  dplyr::filter(
+    longitude >= -59.7700 & longitude <= -49.8361,
+    latitude  >= -12.3561 & latitude  <=  -1.6058
+  ) |>
+  dplyr::mutate(
+    time  = lubridate::as_datetime(time, tz = "America/Sao_Paulo"),
+    year  = lubridate::year(time),
+    month = lubridate::month(time),
+    day   = lubridate::day(time),
+    date  = lubridate::as_date(time),
+    trimestre = paste0("T", lubridate::quarter(time))
+  )
+
+# >>> Anomalia por mês do mesmo ano (mediana mensal por (year, month))
+data_set_xco2_anomal <- data_set_xco2 |>
+  dplyr::filter(xco2_quality_flag == 0) |>
+  dplyr::group_by(year, trimestre) |>
+  dplyr::filter(dplyr::n() >= 5) |>                                  
+  dplyr::mutate(
+    xco2_anomalia = xco2 - median(xco2, na.rm = TRUE)                
+  ) |>
+  dplyr::ungroup()
+
+dplyr::glimpse(data_set_xco2_anomal)
+
+readr::write_rds(data_set_xco2_anomal, "../data/data-set-xco2-anomalia.rds")
+
+
+# data_set_xco2 <- readr::read_rds("../data/data-set-xco2.rds") |>
+#   dplyr::filter(
+#     longitude >= -59.7700 & longitude <= -49.8361,
+#     latitude >= -12.3561 & latitude <= -1.6058
+#   ) |>
+#   dplyr::mutate(
+#     time = lubridate::as_datetime(time, tz = "America/Sao_Paulo"),
+#     year = lubridate::year(time),
+#     month = lubridate::month(time),
+#     day = lubridate::day(time),
+#     date = lubridate::as_date(time)
+#   )
+# 
+# 
+# data_set_xco2_anomal <- data_set_xco2 |>
+#   dplyr::filter(xco2_quality_flag == 0) |>
+#   dplyr::group_by(date) |>
+#   tidyr::nest() |>
+#   dplyr::mutate(nobs = purrr::map_int(data, nrow)) |>
+#   dplyr::filter(nobs >= 5) |>
+#   dplyr::ungroup() |>
+#   dplyr::mutate(
+#     data = purrr::map(data, 
+#                       ~ dplyr::mutate(.x, 
+#                                       xco2_anomalia = .x$xco2 - median(
+#                                         .x$xco2, na.rm = TRUE)))
+#   ) |>
+#   
+#   tidyr::unnest(data)
+# 
+# dplyr::glimpse(data_set_xco2_anomal)
+# 
+# readr::write_rds(data_set_xco2_anomal, "../data/data-set-xco2-anomalia.rds")
+# 
+# data_set_xco2_anomal <- data_set_xco2_anomal |>
+#  dplyr::mutate(trimestre = paste0("T", lubridate::quarter(date)))
+
+# data_set_xco2_anomal |>
+# mutate(
+#     epoca = case_when(
+#       month %in% 1:6   ~ "Jan_Jun",
+#       month %in% 7:12  ~ "Jul_Dez"
+#     )
+#   )
+```
+
+
+
+```{r}
+ 
+#   # 2. PRÉ-PROCESSAMENTO E AGREGAÇÃO
+# dados_agregados <- data_set_xco2_anomal |>
+#   
+#   # Cria colunas auxiliares para garantir a ordenação correta no gráfico
+#   mutate(
+#     # Converte o número do mês (1-12) para o nome abreviado (Jan, Feb, ...)
+#     month_name = month.abb[month],
+#     
+#     # Transforma em FATOR com a ordem cronológica correta
+#     month_factor = factor(month_name, levels = month.abb)
+#   ) |>
+#   
+#   # Agrupa pelo novo fator (mês ordenado)
+#   group_by(month_factor) |>
+#   
+#   # Calcula a média mensal de XCO2
+#   summarise(
+#     median_xco2 = median(xco2, na.rm = TRUE),
+#     .groups = "drop"
+#   )
+# 
+# 
+# # 3. PLOTAGEM: GRÁFICO DE LINHA DA MÉDIA MENSAL
+# plot_xco2_mensal <- dados_agregados |>
+#   ggplot(aes(x = month_factor, y = median_xco2, group = 1)) +
+#   
+#   # Linha
+#   geom_line(linewidth = 1.2, color = "darkblue") +
+#   
+#   # Pontos
+#   geom_point(size = 3, color = "darkblue") +
+#   
+#   theme_minimal() +
+#   
+#   labs(
+#     title = expression(paste("Mediana Mensal de Concentração de ", CO[2], " Atmosférico (", XCO[2], ")")),
+#     x = "Mês",
+#     y = expression(paste("Concentração Média (", XCO[2], ")")),
+#     caption = "Dados agregados por mês."
+#   ) +
+#   
+#   theme(
+#     plot.title = element_text(hjust = 0.5, face = "bold"),
+#     axis.text.x = element_text(angle = 45, hjust = 1)
+#   )
+# 
+# print(plot_xco2_mensal)
+```
+
+
+
+```{r}
+# Criando coluna de semestre
+
+data_set_xco2_anomal <- data_set_xco2_anomal %>%
+  mutate(
+    epoca = case_when(
+      month %in% 1:6   ~ "Jan_Jun",
+      month %in% 7:12  ~ "Jul_Dez"
+    )
+  )
+head(data_set_xco2_anomal)
+```
+
+# Análise da regressão linear simples para caracterização da tendencia XCO2
+```{r}
+mod_trend_xco2 <- lm(xco2 ~ year,
+                      data = data_set_xco2_anomal |>
+                        filter(xco2_quality_flag == 0) |>
+                        drop_na() |>
+                        mutate( year = year - min(year))
+ )
+```
+
+# retirando a tendencia e separando por quadrimestre, estou retirando # a tendencia e substituindo o arquivo que existia com tendencia, #para o sem tendencia
+```{r}
+ a_co2 <- mod_trend_xco2$coefficients[[1]]
+ b_co2 <- mod_trend_xco2$coefficients[[2]]
+
+ data_set_xco2_anomal_sem_tendencia <- data_set_xco2_anomal |>
+   filter(xco2_quality_flag == 0,
+          year >= 2020 & year <= 2025) |>
+   mutate(
+     year_modif = year -min(year),
+     xco2_est = a_co2+b_co2*year_modif,
+     delta = xco2_est-xco2,
+     xco2_detrend = (a_co2-delta) - (mean(xco2) - a_co2)
+   ) |>
+   select(-c( time, xco2_quality_flag,xco2_incerteza,
+             path,year_modif:delta)) |>
+   rename(xco2_tend = xco2,
+          xco2_stend= xco2_detrend) |>
+   mutate(
+     xco2_anomalia = xco2_stend - median(xco2_stend, na.rm = TRUE),
+     .after = xco2_stend
+   ) |>
+   ungroup()
+```
+
+```{r}
+# # 1. PRÉ-PROCESSAMENTO E AGREGAÇÃO
+# dados_para_plot_anual <- data_set_xco2_anomal_sem_tendencia |>
+#   
+#   # ❗ ETAPA CRUCIAL: Extrair 'year' e 'month'
+#   # Se sua coluna 'date' for texto, use 'ymd(date)' ou o formato correto.
+#   mutate(
+#     date = ymd(date), # Exemplo de conversão de data
+#     year = year(date),
+#     month = month(date)
+#   ) |>
+#   
+#   # Cria colunas auxiliares
+#   mutate(
+#     month_name = month.abb[month],
+#     month_factor = factor(month_name, levels = month.abb)
+#   ) |>
+#   
+#   # ❗ MUDANÇA 1: Agrupar por ANO E MÊS
+#   group_by(year, month_factor) |>
+#   
+#   # ❗ MUDANÇA 2: Calcula a MÉDIA mensal por ano
+#   summarise(
+#     median_xco2 = median(xco2_stend, na.rm = TRUE), # Mudança de median para mean
+#     .groups = "drop"
+#   )
+# 
+# 
+# # 2. PLOTAGEM: GRÁFICO DE LINHA POR ANO
+# plot_xco2_anual_mensal <- dados_para_plot_anual |>
+#   
+#   # ❗ MUDANÇA 3: Mapear 'group' e 'color' para o ANO
+#   # 'group=year' garante que o geom_line conecte os pontos do mesmo ano.
+#   # 'color=factor(year)' diferencia as linhas por cor.
+#   ggplot(aes(x = month_factor, y = median_xco2, group = year, color = factor(year))) +
+#   
+#   # Linha (uma linha por ano)
+#   geom_line(linewidth = 1.0) +
+#   
+#   # Pontos
+#   geom_point(size = 2) +
+#   
+#   theme_minimal() +
+#   
+#   labs(
+#     title = expression(paste("Mediana Mensal de ", CO[2], " Atmosférico (", XCO[2], ") por Ano")),
+#     x = "Mês",
+#     y = expression(paste("Concentração Média (", XCO[2], ")")),
+#     color = "Ano", # Título da legenda de cores
+#     caption = "Mediaana de XCO2 calculada por mês dentro de cada ano."
+#   ) +
+#   
+#   theme(
+#     plot.title = element_text(hjust = 0.5, face = "bold"),
+#     axis.text.x = element_text(angle = 45, hjust = 1)
+#   )
+# 
+# print(plot_xco2_anual_mensal)
+```
+
+
+
+```{r}
+data_set_xco2_anomal_sem_tendencia |> 
+  filter(year == 2020, month == 12) |> 
+  ggplot(aes(longitude,latitude, color = month)) +
+  geom_point()
+  
+``` 
+
+#####
+AGORA COMEÇA O SEMIVARIOGRAMA E A KRIGAGEM DOS GURI
+ 
+ 
+## Criando e filtrando o grid da área de estudo
+```{r}
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <- -1.6058
+
+dist_grid <- 0.20
+
+
+grid_quadrante <- expand.grid(
+  longitude = seq(min_lon, max_lon, dist_grid),
+  latitude = seq(min_lat, max_lat, dist_grid)
+)
+
+ ggplot(grid_quadrante, aes(x = longitude, y = latitude)) +
+   geom_point(size = 0.1, color = "blue") +
+   ggtitle("Grid de Pontos para a Área de Estudo") +
+   theme_minimal() +
+   coord_equal()
+readr::write_rds(grid_quadrante, "../data/grid_quadrante.rds")
+glimpse(grid_quadrante)
+sp::coordinates(grid_quadrante) = ~ longitude + latitude
+```
+
+## PASSO 1)
+
+```{r}
+meu_ano = 2024
+meu_trimestre = "T4"
+nr <- data_set_xco2_anomal_sem_tendencia |>
+ filter(year == meu_ano,
+        trimestre == meu_trimestre) |>
+ nrow()
+
+df_aux_geo <- data_set_xco2_anomal_sem_tendencia |>
+ filter(year == meu_ano,
+        trimestre == meu_trimestre) |>
+ sample_n(.98*nr) |>
+ select(longitude, latitude, xco2_anomalia)
+sp::coordinates(df_aux_geo) = ~ longitude + latitude
+plot(df_aux_geo@coords)
+```
+
+## PASSO 2 - Construção do Semivariograma Experimental
+
+```{r}
+form <- xco2_anomalia ~ 1
+vari_exp <- gstat::variogram(form, data = df_aux_geo,
+                     cressie = FALSE,
+                     cutoff = 6.5, # distância máxima 8
+                     width = 0.55) # distancia entre pontos
+vari_exp  |>
+ggplot(aes(x=dist, y=gamma)) +
+ geom_point() +
+ labs(x="lag (º)",
+      y=expression(paste(gamma,"(h)")))
+```
+## PASSO 3) Ajuste dos modelos matemáticos teóricos ao semivariograma experimental
+
+```{r}
+patamar= 2.3
+alcance= 5.70
+epepita= 1.65
+modelo_1 <- fit.variogram(vari_exp,vgm(patamar,"Sph",alcance,epepita))
+modelo_2 <- fit.variogram(vari_exp,vgm(patamar,"Exp",alcance,epepita))
+modelo_3 <- fit.variogram(vari_exp,vgm(patamar,"Gau",alcance,epepita))
+plot_my_models(modelo_1,modelo_2,modelo_3)
+```
+## PASSO 4) Escolha do melhor modelo
+
+O melhor modelo é aquele que apresenta um coeficiente de regressão o mais próximo de 01 e o interesepto o mais próximo de 0.
+
+```{r}
+conjunto_validacao <- df_aux_geo |>
+ as_tibble() |>
+ sample_n(300)
+sp::coordinates(conjunto_validacao) = ~longitude + latitude
+modelos<-list(modelo_1,modelo_2,modelo_3)
+for(j in 1:3){
+ est<-0
+ for(i in 1:nrow(conjunto_validacao)){
+   valid <- gstat::krige(formula=form, conjunto_validacao[-i,], conjunto_validacao, model=modelos[[j]])
+   est[i]<-valid$var1.pred[i]
+ }
+ obs<-as.data.frame(conjunto_validacao)[,3]
+ RMSE<-round((sum((obs-est)^2)/length(obs))^.5,3)
+ mod<-lm(obs~est)
+ b<-round(mod$coefficients[2],3)
+ se<-round(summary(mod)$coefficients[4],3)
+r2<-round(summary(mod)$r.squared,3)
+ a<-round(mod$coefficients[1],3)
+ plot(est,obs,xlab="Estimado", ylab="Observado",pch=j,col="blue",
+      main=paste("Modelo = ",modelos[[j]][2,1],"; Coef. Reg. = ", b, " (SE = ",se, ", r2 = ", r2,")\ny intersept = ",a,"RMSE = ",RMSE ))
+ abline(lm(obs~est));
+ abline(0,1,lty=3)
+}
+```
+## PASSO 5) Definido o melhor modelo, precisamos guardar os valores.
+
+```{r}
+modelo <- modelo_1 ## sempre modificar
+#Salvando os parâmetros dos melhores modelo
+model <- modelo |> slice(2) |> pull(model)
+rss <- round(attr(modelo, "SSErr"),4)
+c0 <- round(modelo$psill[[1]],4)
+c0_c1 <- round(sum(modelo$psill),4)
+a <- ifelse(model == "Gau", round(modelo$range[[2]]*(3^.5),2),
+           ifelse(model == "Exp",round(3*modelo$range[[2]],2),
+           round(modelo$range[[2]],2)))
+
+
+r2 <- vari_exp |> add_column( model = model, a=a, c0 = c0,
+                                c0_c1 = c0_c1) |>
+mutate(
+     gamma_m = ifelse(model == "Sph",
+       ifelse(dist <= a, c0 + (c0_c1 - c0) * (3/2 * (dist/a) - 1/2 * (dist/a)^3),c0_c1), ifelse(model == "Exp", c0 + (c0_c1-c0)*(1-exp(-3*(dist/a))),c0 + (c0_c1-c0)*(1-exp(-(dist/a)^2)))),
+     residuo_total = (gamma-mean(gamma))^2,
+     residuo_mod = (gamma - gamma_m)^2
+   ) |>
+   summarise(
+     r2=(sum(residuo_total) - sum(residuo_mod))/sum(residuo_total)
+   ) |> pull(r2)
+
+tibble(
+meu_ano, meu_trimestre, model, c0, c0_c1, a, rss, r2
+) |> mutate(gde = c0/c0_c1, .after = "a") |>
+  write_csv(paste0("../output/best-fit/",meu_ano,"-",meu_trimestre,"anomal",".csv"))
+
+ls_csv <- list.files("../output/best-fit-anomal/",full.names = TRUE,pattern = ".csv")
+map_df(ls_csv, read_csv) |>
+ writexl::write_xlsx("../output/semivariogram-models-anomal.xlsx")
+png(filename = paste0("../output/semivar-anomal",meu_ano,"-",meu_trimestre,".png"),
+   width = 800, height = 600)
+plot(vari_exp,model=modelo,cex.lab=2, col=1,pl=F,pch=16,cex=2.2,ylab=list("Semivariância",cex=2.3),xlab=list("Distância de Separação h (m)",cex=2.3,cex.axis=4))
+dev.off()
+```
+
+## Passo 6 - Krigagem Ordinária - interpolação em locais não amostrados
+
+
+```{r}
+ko_variavel <- krige(formula=form, df_aux_geo, grid_quadrante, model=modelo,
+                   block=c(0.1,0.1),
+                  nsim=0,
+                 na.action=na.pass,
+                debug.level=-1
+)
+```
+
+Passo 7 - Visualização dos padrões espaciais e armazenamento dos dados e imagem.
+
+```{r}
+mapa <- as_tibble(ko_variavel) |>
+ggplot(aes(x=longitude, y=latitude)) +
+ geom_tile(aes(fill = var1.pred)) +
+ scale_fill_viridis_c() +
+ coord_equal() +
+ labs(x="Longitude",
+      y="Latitude",
+      fill="xco2") +
+theme_bw()
+mapa
+ggsave(paste0("../output/mapas/kgr-anomal-",meu_ano,"-",meu_trimestre,".png"),
+     plot = mapa, width = 10, height = 8, dpi = 300)
+df <- ko_variavel |>
+ as_tibble()
+write_rds(df,paste0("../output/mapas/kgr-anomal-",meu_ano,"-",meu_trimestre,"anomal",".rds"))
+```
+
+## KRIGAGEM DOS GURI DEU CERTO!!!!!!!
+## Compilar mapas gerados
+```{r}
+# 1) Listar só 2020–2024 com as duas épocas
+list_rds <- list.files(
+  "../output/mapas/",
+  pattern = "^kgr-xco2-(2020|2021|2022|2023|2024)-(Jan_Jun|Jul_Dez)\\.rds$",
+  full.names = TRUE
+)
+
+# 2) Ler e extrair ano/época do nome
+rds_reader <- function(path){
+  nome <- basename(path)
+  m <- stringr::str_match(nome, "^kgr-xco2-(\\d{4})-(Jan_Jun|Jul_Dez)\\.rds$")
+  year  <- m[,2]
+  epoca <- m[,3]
+
+  readr::read_rds(path) |>
+    dplyr::mutate(
+      year = year,
+      epoca_n = dplyr::if_else(epoca == "Jan_Jun", 1L, 2L),
+      epoca_label = dplyr::if_else(epoca == "Jan_Jun", "época 1", "época 2"),
+      year_epoca_label = paste0(year, " / ", epoca_label)
+    ) |>
+    dplyr::rename(
+      xco2 = var1.pred,
+      xco2_std = var1.var
+    ) |>
+    dplyr::select(latitude, longitude, xco2, xco2_std, year, epoca_n, year_epoca_label)
+}
+
+kgr_maps <- purrr::map_dfr(list_rds, rds_reader)
+
+# PASSO 3: Aplicar a função e criar a tabela final
+kgr_maps <- map_df(list_rds, rds_reader)
+
+# NÃO POSSO CALCULAR ANOMALIA AQUI DNV
+# PASSO 4: (NOVO) Calcular a anomalia para cada grupo
+#kgr_maps <- kgr_maps |>
+#  group_by(year_epoca_label) |>
+#  mutate(xco2_anomaly = xco2 - median(xco2, na.rm = TRUE),
+#         .after = xco2)
+
+# PASSO 5: Gerar o gráfico
+kgr_maps |>
+  ggplot(aes(x = year_epoca_label, y = xco2)) +
+  geom_boxplot(fill = "gray") +
+  labs(
+    title = "Distribuição de XCO2 por Ano e Época",
+    x = "Ano e Época",
+    y = "XCO2"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+# 1) Listar só 2020–2024 com as duas épocas
+list_rds <- list.files(
+  "../output/mapas/",
+  pattern = "^kgr-anomal-(2020|2021|2022|2023|2024)-(T1anomal|T2anomal|T3anomal|T4anomal)\\.rds$",
+  full.names = TRUE
+)
+
+# Substitua pelo nome do seu arquivo
+readRDS("../output/mapas/kgr-anomal-2024-T4anomal.rds") |> 
+  glimpse()
+
+# 2) Ler e extrair ano/época do nome
+rds_reader <- function(path){
+  
+  # 1. Extração via Regex (Sua lógica)
+  nome <- basename(path)
+  m <- stringr::str_match(nome, "^kgr-anomal-(\\d{4})-(T1anomal|T2anomal|T3anomal|T4anomal)\\.rds$")
+  
+  # m[,2] é o primeiro grupo (ex: "2020")
+  # m[,3] é o segundo grupo (ex: "T1anomal")
+  ano_extraido <- m[,2]       
+  trimestre_raw <- m[,3] 
+  
+  # 2. Leitura e Tratamento
+  readr::read_rds(path) |> 
+    dplyr::mutate(
+      year = as.numeric(ano_extraido), # Garante que o ano seja número
+      
+      # Aqui transformamos "T1anomal" em apenas o número 1, 2, 3 ou 4
+      trimestre_n = dplyr::case_when(
+        trimestre_raw == "T1anomal" ~ 1L,
+        trimestre_raw == "T2anomal" ~ 2L,
+        trimestre_raw == "T3anomal" ~ 3L,
+        trimestre_raw == "T4anomal" ~ 4L
+      ),
+      
+      # Cria os labels bonitos
+      trimestre_label = paste0("T", trimestre_n),         # "T1"
+      year_trimestre_label = paste0(year, " / ", trimestre_label) # "2020 / T1"
+    ) |> 
+    dplyr::rename(
+      xco2_anomalia = var1.pred,
+      xco2_anomalia_std = var1.var
+    ) |> 
+    dplyr::select(latitude, longitude, xco2_anomalia, year, trimestre_n, trimestre_label, year_trimestre_label)
+}
+
+kgr_maps_anomal <- purrr::map_dfr(list_rds, rds_reader)
+
+# PASSO 3: Aplicar a função e criar a tabela final
+kgr_maps_anomal <- map_df(list_rds, rds_reader)
+
+# PASSO 5: Gerar o gráfico
+kgr_maps_anomal |>
+  ggplot(aes(x = year_trimestre_label, y = xco2_anomalia)) +
+  geom_boxplot(fill = "gray") +
+  labs(
+    title = "Distribuição de XCO2_anomalia por Ano e Época",
+    x = "Ano e Época",
+    y = "XCO2"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+kgr_maps_anomal |>
+  ggplot(aes(x = trimestre_label, y = xco2_anomalia)) +
+  geom_boxplot(fill = "gray") +
+  labs(
+    title = "Distribuição de XCO2_anomalia por trimestre",
+    x = "Ano e mês",
+    y = "XCO2"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+
+# 1. CRIAR TABELA RESUMO COM A DERIVADA
+resumo_derivada <- kgr_maps_anomal |>
+  group_by(year_trimestre_label, latitude, longitude) |>
+  summarise(
+    media_xco2 = mean(xco2_anomalia, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange( latitude, longitude, year_trimestre_label) |> # Garante a ordem cronológica
+  mutate(
+    # Derivada = Média Atual - Média Anterior
+    derivada = media_xco2 - lag(media_xco2, default = first(media_xco2))
+  )
+
+# 2. GERAR O GRÁFICO (COM EIXO SECUNDÁRIO PARA A DERIVADA)
+# Usamos eixo secundário pois a derivada (variação) costuma ser menor que o valor absoluto.
+
+fator_escala <- 5 # Ajuste esse valor se a linha vermelha ficar muito baixa ou alta
+
+kgr_maps_anomal |>
+  ggplot(aes(x = year_trimestre_label)) +
+  
+  # 1. O Boxplot original (Eixo da Esquerda)
+  geom_boxplot(aes(y = xco2_anomalia), fill = "gray") +
+  
+  # 2. A Linha da Derivada (Multiplicada pelo fator para aparecer bem)
+  geom_line(data = resumo_derivada, 
+            aes(y = derivada * fator_escala, group = 1), 
+            color = "red", size = 1) +
+  geom_point(data = resumo_derivada, 
+             aes(y = derivada * fator_escala), 
+             color = "red") +
+  
+  # 3. Ajustes de Eixos e Temas
+  scale_y_continuous(
+    name = "XCO2 (Anomalia)",
+    # Cria o eixo da direita dividindo pelo mesmo fator
+    sec.axis = sec_axis(~ . / fator_escala, name = "Derivada (Taxa de Variação)")
+  ) +
+  labs(
+    title = "Distribuição de XCO2 e sua Derivada (Variação)",
+    x = "Ano e Época"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.title.y.right = element_text(color = "red"), # Pinta o texto da direita de vermelho
+    axis.text.y.right = element_text(color = "red")
+  )
+```
+
+```{r}
+resumo_derivada |> 
+  filter(str_detect(year_trimestre_label,"2024 / T1")) |> 
+  ggplot(aes(x=longitude, y=latitude)) +
+  geom_tile(aes(fill = derivada)) +
+  scale_fill_viridis_c(option="E") +
+  coord_equal() +
+  labs(x="Longitude",
+       y="Latitude",
+       fill="Derivada-2024-T1") +
+  theme_bw()
+```
+```{r}
+dados_xco2 <- kgr_maps_anomal
+
+# Pegue a primeira longitude do XCO2
+head(dados_xco2$longitude, 3)
+
+# Pegue a primeira longitude da Base Territorial
+head(base_territorial$longitude, 3)
+```
+```{r}
+base_territorial <- readr::read_rds("../data/BASE_FINAL_MAPPING_COMPLETO.rds")
+dados_xco2 <- kgr_maps_anomal
+
+# --- 1. TRANSFORMAR EM PONTOS (SF) ---
+# XCO2 (seus dados de carbono)
+xco2_sf <- dados_xco2 |> 
+  filter(!is.na(longitude), !is.na(latitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+# Base Territorial (seu mapa completo)
+base_sf <- base_territorial |> 
+  filter(!is.na(longitude), !is.na(latitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+
+# --- 2. O JOIN ESPACIAL (A SOLUÇÃO MÁGICA) ---
+# st_nearest_feature: Pega o vizinho mais próximo, ignorando o desalinhamento de 0.1
+message(">> Realizando Join Espacial (pode demorar uns segundos)...")
+dados_join_sf <- st_join(xco2_sf, base_sf, join = st_nearest_feature)
+
+
+# --- 3. LIMPAR E VOLTAR PRA TABELA ---
+dados_analise <- dados_join_sf |> 
+  st_drop_geometry() |> 
+  as_tibble() |> 
+  # Renomeia para manter a longitude original do XCO2 como referência
+  rename(longitude = longitude.x, latitude = latitude.x) |> 
+  select(-ends_with(".y"))
+
+message(paste("✅ Agora sim! Linhas prontas para análise:", nrow(dados_analise)))
+glimpse(dados_analise)
+```
+
+
+```{r}
+
+# --- 3. ANÁLISE ESTATÍSTICA DESCRITIVA ---
+# Vamos ver a média de XCO2 por categoria
+resumo_estatistico <- dados_analise |> 
+  group_by(categoria_mapa) |> 
+  summarise(
+    Media_XCO2 = mean(xco2_anomalia, na.rm = TRUE),
+    Mediana_XCO2 = median(xco2_anomalia, na.rm = TRUE),
+    Desvio_Padrao = sd(xco2_anomalia, na.rm = TRUE),
+    N_Pixels = n()
+  ) |> 
+  arrange(desc(Media_XCO2))
+
+print(resumo_estatistico)
+
+
+# --- 4. O GRÁFICO DA VERDADE (BOXPLOT) ---
+# Vamos usar as mesmas cores do mapa para facilitar a leitura mental
+
+cores_mapa <- c(
+  "Terra Indígena"             = "#FF8C00",
+  "Unidade de Conservação"     = "#40E0D0",
+  "Pastagem"                   = "#F4A460",
+  "Soja"                       = "#C71585",
+  "Outras áreas não vegetadas" = "#BEBEBE",
+  "Floresta"                   = "#228B22",
+  "Outros Usos"                = "#556B2F"
+)
+
+ggplot(dados_analise, aes(x = reorder(categoria_mapa, xco2_anomalia, FUN = median), 
+                          y = xco2_anomalia, 
+                          fill = categoria_mapa)) +
+  
+  # Boxplot mostra a distribuição (mediana, quartis e outliers)
+  geom_boxplot(alpha = 0.8, outlier.size = 0.5, outlier.alpha = 0.3) +
+  
+  scale_fill_manual(values = cores_mapa) +
+  theme_bw() +
+  
+  labs(
+    title = "Boxplot do Uso do Solo e anomalia XCO2",
+    y = "Anomalia de XCO2 (ppm)",
+    fill = "Categoria"
+  ) +
+  
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), # Gira o texto do eixo X
+    legend.position = "none" # Remove legenda pq o eixo X já explica
+  )
+
+# ggsave("boxplot_xco2_uso_solo.png", width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# PASSO 5: Gerar o gráfico
+dados_analise |>
+  ggplot(aes(x = year_trimestre_label, y = xco2_anomalia)) +
+  geom_boxplot(fill = "gray") +
+  labs(
+    title = "Distribuição de XCO2_anomalia por Ano e Época",
+    x = "Ano e Época",
+    y = "XCO2"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+# --- 1. DEFINIR AS CORES (Pra manter o padrão do mapa) ---
+cores_mapa <- c(
+  "Terra Indígena"             = "#FF8C00",
+  "Unidade de Conservação"     = "#40E0D0",
+  "Pastagem"                   = "#F4A460",
+  "Soja"                       = "#C71585",
+  "Floresta"                   = "#228B22",
+  "Outros Usos"                = "#556B2F",
+  "Outras áreas não vegetadas" = "#BEBEBE"
+)
+
+# --- 2. CRIAR A FUNÇÃO DE PLOTAGEM ---
+# Essa função recebe o nome da categoria e faz todo o trabalho sujo
+plotar_uso_individual <- function(nome_categoria) {
+  
+  # 1. Filtra só a categoria que você pediu
+  dados_filtrados <- dados_analise |> 
+    filter(categoria_mapa == nome_categoria)
+  
+  # Check de segurança: Se não tiver dados, avisa e para
+  if(nrow(dados_filtrados) == 0) {
+    message(paste("⚠️ Atenção: Não há dados para a categoria:", nome_categoria))
+    return(NULL)
+  }
+  
+  # 2. Pega a cor certa da paleta
+  cor_atual <- cores_mapa[nome_categoria]
+  
+  # 3. Gera o Gráfico
+  p <- ggplot(dados_filtrados, aes(x = year_trimestre_label, y = xco2_anomalia)) +
+    
+    geom_boxplot(fill = cor_atual, alpha = 0.8, outlier.size = 0.5) +
+    
+    # Adiciona uma linha de tendência suave (opcional, mas fica chique)
+    # geom_smooth(method = "loess", se = FALSE, aes(group=1), color = "black", size=0.5, linetype="dashed") +
+    
+    theme_bw() +
+    
+    labs(
+      title = paste("Anomalia de XCO2:", nome_categoria),
+      subtitle = "Distribuição trimestral dos valores de Carbono",
+      x = "Ano / Trimestre",
+      y = "Anomalia de XCO2 (ppm)"
+    ) +
+    
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5), # Texto em pé pra ler as datas
+      plot.title = element_text(face = "bold", size = 14, color = cor_atual) # Título na cor da categoria
+    )
+  
+  return(p)
+}
+
+# --- 3. AGORA É SÓ CHAMAR UM POR UM! ---
+
+# Primeiro: TERRA INDÍGENA
+p1 <- plotar_uso_individual("Terra Indígena")
+print(p1)
+# ggsave("boxplot_indigena.png", p1, width = 8, height = 5)
+
+# Segundo: PASTAGEM
+p2 <- plotar_uso_individual("Pastagem")
+print(p2)
+# ggsave("boxplot_pastagem.png", p2, width = 8, height = 5)
+
+# Terceiro: SOJA (Se houver)
+p3 <- plotar_uso_individual("Soja")
+print(p3)
+
+# Quarto: FLORESTA
+p4 <- plotar_uso_individual("Floresta")
+print(p4)
+
+# Quinto: UNIDADE DE CONSERVAÇÃO
+p5 <- plotar_uso_individual("Unidade de Conservação")
+print(p5)
+```
+
+
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# --- 1. PREPARAÇÃO ---
+# (Assumindo que 'dados_analise' é o seu dataframe de XCO2)
+dados_plotagem_xco2 <- dados_analise |> 
+  filter(categoria_mapa %in% names(cores_mapa)) 
+
+# --- 2. PLOTAGEM TURBINADA (XCO2) ---
+p_xco2_gigante <- ggplot(dados_plotagem_xco2, aes(x = year_trimestre_label, y = xco2_anomalia, fill = categoria_mapa)) +
+  
+  # AJUSTE EXTRA: Linha Zero (Referência)
+  # Coloquei ANTES do boxplot para ficar no fundo
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40", size = 0.8) +
+  
+  # Boxplots "Gordos" e Visíveis (Igual ao do SIF)
+  geom_boxplot(
+    alpha = 0.8, 
+    outlier.size = 1.2, 
+    size = 0.5,         
+    width = 0.8         
+  ) +
+  
+  # Layout Vertical (Um embaixo do outro)
+  facet_wrap(~ categoria_mapa, ncol = 1) + 
+  
+  scale_fill_manual(values = cores_mapa) +
+  
+  # TRAVA DE ESCALA (-5 a 5)
+  coord_cartesian(ylim = c(-5, 5)) +
+  
+  labs(
+    title = "Dinâmica da Anomalia de XCO2 por Uso e Cobertura do Solo",
+    subtitle = "Variação em relação à média (ppm)",
+    x = "Ano / Trimestre",
+    y = "Anomalia de XCO2 (ppm)"
+  ) +
+  
+  # Estética Legível
+  theme_bw(base_size = 14) + 
+  
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 10),
+    legend.position = "none",
+    strip.background = element_rect(fill = "gray95"),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+
+# --- 3. SALVAR ARQUIVO GIGANTE ---
+# ggsave("XCO2_Boxplot_Gigante.png", 
+#        plot = p_xco2_gigante, 
+#        width = 10, 
+#        height = 20, 
+#        dpi = 300, 
+#        limitsize = FALSE)
+# 
+# message("✅ Gráfico de XCO2 salvo! Abra 'XCO2_Boxplot_Gigante.png'.")
+```
+
+```{r}
+
+# --- 1. CRIAR OS SUPER GRUPOS ---
+dados_comparativos <- dados_analise |> 
+  mutate(
+    Super_Grupo = case_when(
+      # Time da Floresta
+      categoria_mapa %in% c("Terra Indígena", "Unidade de Conservação", "Floresta") ~ "Áreas Florestais/Protegidas",
+      
+      # Time do Agro
+      categoria_mapa %in% c("Soja", "Pastagem") ~ "Áreas Agrícolas (Soja/Pasto)",
+      
+      # O resto vira NA
+      TRUE ~ NA_character_
+    )
+  ) |> 
+  # Removemos o que não entrou nos grupos (água, urbano, etc.)
+  filter(!is.na(Super_Grupo))
+
+# --- 2. DEFINIR CORES SEMÂNTICAS ---
+cores_duelo <- c(
+  "Áreas Florestais/Protegidas"  = "#228B22", # Verde Floresta
+  "Áreas Agrícolas (Soja/Pasto)" = "#B22222"  # Vermelho Fogo
+)
+
+# --- 3. O GRÁFICO DO DUELO ---
+ggplot(dados_comparativos, aes(x = year_trimestre_label, y = xco2_anomalia, fill = Super_Grupo)) +
+  
+  # Boxplot agrupado
+  geom_boxplot(alpha = 0.8, outlier.size = 0.3, position = position_dodge(width = 0.8)) +
+  
+  # Linha Zero de referência
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  
+  # Travar escala como você pediu (-5 a 5)
+  coord_cartesian(ylim = c(-5, 5)) +
+  
+  # Cores
+  scale_fill_manual(values = cores_duelo) +
+  
+  theme_bw() +
+  
+  labs(
+    title = "Dinâmica do Carbono: Floresta vs. Agricultura",
+    x = "Ano / Trimestre",
+    y = "Anomalia de XCO2 (ppm)",
+    fill = "Grupo"
+  ) +
+  
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5), # Texto em pé
+    legend.position = "top", # Legenda em cima pra destacar os times
+    legend.title = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+
+# ggsave("boxplot_duelo_floresta_vs_agro.png", width = 12, height = 6, dpi = 300)
+```
+```{r}
+# Vamos agregar por Ano e Trimestre separado para montar a matriz
+dados_matriz <- dados_comparativos |> 
+  # Extrair ano e trimestre do label se não tiver as colunas separadas
+  # (Assumindo que você tem colunas 'year' e 'trimestre_label' no dataframe original)
+  group_by(year, trimestre_label, Super_Grupo) |> 
+  summarise(Media = mean(xco2_anomalia, na.rm = TRUE), .groups = "drop")
+
+ggplot(dados_matriz, aes(x = trimestre_label, y = factor(year), fill = Media)) +
+  
+  # Os quadradinhos
+  geom_tile(color = "white") +
+  
+  # Separa um bloco para Floresta e outro para Agro
+  facet_wrap(~Super_Grupo) +
+  
+  # Escala de cor divergente (Azul = Baixo, Branco = Zero, Vermelho = Alto)
+  scale_fill_gradient2(low = "green", mid = "white", high = "red", midpoint = 0) +
+  
+  theme_minimal() +
+  labs(
+    title = "Matriz de Intensidade de Carbono",
+    x = "Trimestre",
+    y = "Ano",
+    fill = "Anomalia Média"
+  )
+```
+```{r}
+ggplot(dados_comparativos, aes(x = xco2_anomalia, fill = Super_Grupo)) +
+  
+  # Density plot com transparência pra ver a sobreposição
+  geom_density(alpha = 0.6) +
+  
+  # Linha vertical no zero
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  
+  scale_fill_manual(values = cores_duelo) +
+  coord_cartesian(xlim = c(-5, 5)) + # Foca no miolo
+  
+  theme_classic() +
+  labs(
+    title = "Distribuição de Frequência do XCO2",
+    subtitle = "O quanto o uso da terra desloca a curva de carbono?",
+    x = "Anomalia de XCO2",
+    y = "Densidade"
+  ) +
+  theme(legend.position = "top")
+```
+
+
+## Anomalia compilada de todas épocas
+```{r}
+kgr_maps_anomal |>
+  mutate(class_anom = ifelse(xco2_anomalia <= 0, "Negativo", "Positivo")) |> 
+  group_by(year_epoca_label) |>
+  ggplot(aes(y = year_epoca_label, x = xco2_anomalia, fill = class_anom)) +
+  geom_boxplot(position = position_dodge(width = 0)) +
+  theme_classic() +
+  geom_vline(xintercept = 0, linetype = "dashed") +  # << apenas esta linha
+  xlim(-4, 4) +
+  scale_fill_manual(values = c("blue3", "orange3")) +
+  theme(axis.text.x = element_text(angle = 45))
+
+```
+
+
+
+```{r}
+kgr_maps_anomal |> 
+  select(longitude, latitude, xco2_anomalia,year_epoca_label) |> 
+  pivot_wider(values_from = xco2_anomalia,
+              names_from = year_epoca_label) |> 
+  select(-longitude, -latitude) |> 
+  cor() |> 
+  corrplot::corrplot(method = "square",
+                     type = "upper",
+                     diag = FALSE)
+         # outline = T,,
+         # addgrid.col = "darkgray",cl.pos = "r", tl.col = "black",
+         # tl.cex = 1, cl.cex = 1, type = "upper",
+         # diag = FALSE,
+         # addCoef.col = "black",
+         # # cl.ratio = 0.2,
+         # cl.length = 9,
+         # number.cex = 0.9)
+```
+
+```{r}
+get_my_par <- function(df, var_return = c("xco2","xco2_anomalia"),
+                       par_return = c("beta0","beta1")){
+  n_end <- nrow(df)/2-.5
+  x <- seq(0,n_end,0.5)
+  if(var_return == "xco2") {
+    y <- df$xco2
+    mod <- lm(y~x)
+    beta0 <- mod$coefficients[[1]]
+    beta1 <- mod$coefficients[[2]]
+  } else if(var_return == "xco2_anomalia"){
+    yanom <- df$xco2_anomaly
+    mod <- lm(yanom~x)
+    beta0 <- mod$coefficients[[1]]
+    beta1 <- mod$coefficients[[2]]
+  }
+  if(par_return == "beta0") {
+    return(beta0)
+  } else {
+    return(beta1)
+  }
+}
+```
+
+```{r}
+# kgr_maps_nested <- kgr_maps_anomal |>
+#   select(longitude, latitude, xco2_anomalia, year_epoca_label) |> 
+  # group_by(season_year,X,Y) |>
+  # summarise(
+  #   media_xco2 = mean(xco2,na.rm = TRUE),
+  #   media_xco2_anomaly = mean(anom_xco2, na.rm = TRUE),
+  #   # desv_pad = mean(xco2_std),
+  #   .groups = "drop"
+  # ) |>
+#   group_by(longitude,latitude) |>
+#   nest() |>
+#   ungroup()
+# 
+# kgr_maps_nested_betas <- kgr_maps_nested |> 
+#   mutate(
+#     beta0_xco2 = map(data,get_my_par,var_return="xco2",par_return="beta0"),
+#     beta1_xco2 = map(data,get_my_par,var_return="xco2",par_return="beta1"),
+#     beta0_xco2_anom = map(data,get_my_par,var_return="xco2_anomalia",par_return="beta0"),
+#     beta1_xco2_anom = map(data,get_my_par,var_return="xco2_anomalia",par_return="beta1"),
+#   ) |> 
+#   select(-data) |> 
+#   unnest()
+```
+```{r}
+# kgr_maps_nested_betas |>
+#   ggplot(aes(x = longitude, y = latitude)) +
+#   geom_tile(aes(fill = beta1_xco2_anom)) +
+#   scale_fill_viridis_c(option = "inferno") +
+#   coord_equal() +
+#   labs(x = "Longitude",
+#        y = "Latitude",
+#        fill = "beta1",
+#        title = "xco2_anom") +
+#   theme_bw()
+# 
+# kgr_maps_nested_betas |>
+#   ggplot(aes(x = longitude, y = latitude)) +
+#   geom_tile(aes(fill = beta0_xco2_anom)) +
+#   scale_fill_viridis_c(option = "inferno") +
+#   coord_equal() +
+#   labs(x = "Longitude",
+#        y = "Latitude",
+#        fill = "beta0",
+#        title = "xco2_anom") +
+#   theme_bw()
+```
+```{r}
+# kgr_maps_nested_betas |>
+#   ggplot(aes(x = longitude, y = latitude)) +
+#   geom_tile(aes(fill = beta1_xco2)) +
+#   scale_fill_viridis_c() +
+#   coord_equal() +
+#   labs(x = "Longitude",
+#        y = "Latitude",
+#        fill = "beta1",
+#        title = "XCO2") +
+#   theme_bw()
+# 
+# kgr_maps_nested_betas |>
+#   ggplot(aes(x = longitude, y = latitude)) +
+#   geom_tile(aes(fill = beta0_xco2)) +
+#   scale_fill_viridis_c() +
+#   coord_equal() +
+#   labs(x = "Longitude",
+#        y = "Latitude",
+#        fill = "beta0",
+#        title = "XCO2") +
+#   theme_bw()
+```
+
+
+```{r}
+# kgr_maps_nested_betas |>
+#   ggplot(aes(x = beta1_xco2, y = beta1_xco2_anom)) +
+#   geom_point()
+```
+
+```{r}
+
+kgr_join <- dplyr::bind_cols(
+  kgr_maps,
+  dplyr::select(kgr_maps_anomal, xco2_anomalia)
+)
+
+kgr_join |>
+  ggplot2::ggplot(ggplot2::aes(x = xco2_anomalia, y = xco2)) +
+  ggplot2::geom_point()
+
+# defina as chaves em comum (ajuste se usar outras)
+kgr_join <- kgr_maps |>
+  dplyr::left_join(
+    kgr_maps_anomal |>
+      dplyr::select(latitude, longitude, year_epoca_label, xco2_anomalia),
+    by = c("latitude", "longitude", "year_epoca_label")
+  )
+
+kgr_join |>
+  ggplot2::ggplot(ggplot2::aes(x = xco2_anomalia, y = xco2)) +
+  ggplot2::geom_hex(bins = 80) +
+  ggplot2::scale_fill_gradientn(colors = c("blue", "yellow", "red")) +
+  ggplot2::theme_bw()
+
+
+# kgr_join |>
+#   ggplot(aes(xco2_anomalia, xco2)) +
+#   stat_density_2d(
+#     aes(color = after_stat(density)),
+#     geom = "point", contour = FALSE, n = 200, size = 2.2
+#   ) +
+#   scale_color_gradientn(
+#     colors = c("navy", "blue", "cyan", "yellow", "orange", "red"),
+#     name = "Densidade"
+#   ) +
+#   theme_bw()
+
+```
+
+
+
+### Integral das anomalias no período
+
+```{r}
+kgr_maps_anomal |> 
+  mutate(class_anom = ifelse(xco2_anomalia<=0,
+                             "Negativo","Positivo")) |> 
+  mutate(
+    semestre = str_sub(year_epoca_label,-1)
+  ) |> 
+  group_by(semestre, longitude, latitude) |> 
+  summarise(
+    sum_anomaly = sum(xco2_anomalia)
+  ) |>
+  ggplot(aes(x = longitude, y = latitude)) +
+  geom_tile(aes(fill = sum_anomaly)) +
+  scale_fill_viridis_c() +
+  coord_equal() +
+  labs(x = "Longitude",
+       y = "Latitude",
+       fill = "sum_anomaly",
+       title = "sum_anomaly") +
+  theme_bw() +
+  facet_wrap(~semestre)
+```
+
+```{r}
+library(stringr)
+```
+
+
+```{r}
+
+# Detecta qual coluna já existe para época e cria 'epoca' de forma robusta
+if ("epoca" %in% names(kgr_maps_anomal)) {
+  kgr_maps_epoca <- kgr_maps_anomal %>%
+    mutate(epoca = as.integer(epoca))
+} else if ("epoca_n" %in% names(kgr_maps_anomal)) {
+  kgr_maps_epoca <- kgr_maps_anomal %>%
+    mutate(epoca = as.integer(epoca_n))
+} else {
+  # Deriva do label (pega o último número do rótulo, ex.: "2020 / época 1" -> 1)
+  kgr_maps_epoca <- kgr_maps_anomal %>%
+    mutate(epoca = readr::parse_integer(stringr::str_extract(year_epoca_label, "\\d+$")))
+}
+
+# 2) Base agregada por epoca (mesma lógica do seu tile)
+grid_epoca <- kgr_maps_epoca |>
+  group_by(epoca, longitude, latitude) |>
+  summarise(sum_anomaly = sum(xco2_anomalia, na.rm = TRUE), .groups = "drop")
+
+# 3) Hotspots e coldspots por epoca (top/bottom 5)
+hotspots <- grid_epoca |>
+  group_by(epoca) |>
+  slice_max(sum_anomaly, n = 5, with_ties = FALSE) |>
+  mutate(tipo = "hotspot")
+
+coldspots <- grid_epoca |>
+  group_by(epoca) |>
+  slice_min(sum_anomaly, n = 5, with_ties = FALSE) |>
+  mutate(tipo = "coldspot")
+
+pontos_destaque <- bind_rows(hotspots, coldspots) |>
+  ungroup()
+
+# 4) Plot: seu tile + pontos (sem mudar nomes/estética)
+ggplot(grid_epoca, aes(x = longitude, y = latitude)) +
+  geom_tile(aes(fill = sum_anomaly)) +
+  scale_fill_viridis_c() +
+  coord_equal() +
+  labs(x = "Longitude",
+       y = "Latitude",
+       fill = "sum_anomaly",
+       title = "sum_anomaly") +
+  theme_bw() +
+  facet_wrap(~ epoca) +
+  geom_point(
+    data = pontos_destaque,
+    aes(x = longitude, y = latitude, shape = tipo, color = tipo),
+    size = 2.8, stroke = 1
+  ) +
+  scale_color_manual(values = c(hotspot = "red3", coldspot = "blue3")) +
+  scale_shape_manual(values = c(hotspot = 13, coldspot = 14))
+
+```
+
+
+```{r}
+# virar data.frame com colunas latitude/longitude + atributos
+# grid_df <- as.data.frame(grid_quadrante)           # atributos (@data)
+# coords  <- sp::coordinates(grid_quadrante)         # matriz [lon, lat]
+# grid_df$longitude <- coords[,1]
+# grid_df$latitude  <- coords[,2]
+# 
+# # (opcional) padronizar casas decimais para evitar mismatch por flutuação
+# kgr_maps  <- kgr_maps  |> mutate(
+#   latitude  = round(latitude, 6),
+#   longitude = round(longitude, 6)
+# )
+# grid_df <- grid_df |> mutate(
+#   latitude  = round(latitude, 6),
+#   longitude = round(longitude, 6)
+# )
+# 
+# kgr_maps <- kgr_maps |>
+#   left_join(grid_df, by = c("latitude","longitude"))
+
+```
+
+## Padrões espaciais de XCO2 para o estado por época
+```{r}
+epoca <- kgr_maps |> pull(year_epoca_label) |> unique()
+map(epoca, ~{
+  kgr_maps |>
+    filter(year_epoca_label == .x) |>
+    ggplot(aes(x = longitude, y = latitude)) +
+    geom_tile(aes(fill = xco2)) +
+    scale_fill_viridis_c(option = "mako", direction = -1) +
+    coord_equal() +
+    labs(x = "Longitude",
+         y = "Latitude",
+         fill = "XCO2",
+         title = .x) +
+    theme_bw()
+})
+```
+
+## Padrões espaciais de anomalia de xco2 por estação
+```{r}
+epoca <- kgr_maps_anomal |> pull(year_epoca_label) |> unique()
+map(epoca, ~{
+  kgr_maps_anomal |>
+    filter(year_epoca_label == .x) |>
+    ggplot(aes(x = longitude, y = latitude)) +
+    geom_tile(aes(fill = xco2_anomalia)) +
+    scale_fill_viridis_c(option = "inferno", direction = -1) +
+    coord_equal() +
+    labs(x = "Longitude",
+         y = "Latitude",
+         fill = "anomaly_2",
+         title = .x) +
+    theme_bw()
+})
+```
+
+
+```{r}
+# map(unique(kgr_maps$year_epoca_label), ~{
+#   
+#   # Identificar hotspots 
+#   hotspots <- kgr_maps |>
+#     dplyr::filter(year_epoca_label == .x) |> 
+#     dplyr::slice_max(xco2_anomaly, n = 5, with_ties = FALSE) |>
+#     dplyr::mutate(tipo = "hotspot")  
+#   
+#   coldspots <- kgr_maps |>
+#     dplyr::filter(year_epoca_label == .x) |> 
+#     dplyr::slice_min(xco2_anomaly, n = 5, with_ties = FALSE) |>
+#     dplyr::mutate(tipo = "coldspot")  
+#   
+#   pontos_destaque <- dplyr::bind_rows(hotspots, coldspots)
+#   
+#   kgr_maps |> 
+#     dplyr::filter(year_epoca_label == .x) |> 
+#     ggplot2::ggplot(ggplot2::aes(x = latitude, y = longitude)) +
+#     ggplot2::geom_tile(ggplot2::aes(fill = xco2_anomaly)) +
+#     ggplot2::geom_point(data = pontos_destaque,
+#                ggplot2::aes(x = latitude, y = longitude, color = tipo),
+#                shape = 21, size = 3, fill = "white", stroke = 1.2) +
+#     ggplot2::scale_color_manual(values = c("hotspot" = "red", "coldspot" = "blue")) +
+#     ggplot2::geom_point(
+#       data = kgr_maps |> 
+#         dplyr::filter(year_epoca_label == .x, xco2_anomaly > 0) |>
+#         dplyr::summarise(
+#           lon_centro = sum(longitude * xco2_anomaly, na.rm = TRUE) / sum(xco2_anomaly, na.rm = TRUE),
+#           lat_centro = sum(latitude  * xco2_anomaly, na.rm = TRUE) / sum(xco2_anomaly, na.rm = TRUE)
+#         ),
+#       ggplot2::aes(x = lat_centro, y = lon_centro),  # <- atenção: eixos estão trocados no ggplot
+#       color = "cyan", size = 2.5, shape = 4, stroke = 1.2) +
+#     viridis::scale_fill_viridis(option = "inferno") +
+#     ggplot2::coord_equal(
+#       xlim = c(-12.3561, -1.6058),   # latitude (x no seu plot)
+#       ylim = c(-59.7700, -49.8361),  # longitude (y no seu plot)
+#       expand = FALSE
+#     ) +
+#     ggplot2::facet_wrap(~ year_epoca_label) +
+#     ggplot2::labs(
+#       x = "Longitude", y = "Latitude", fill = "xco2_anomaly",
+#       title = .x
+#     ) +
+#     ggplot2::theme_bw()
+# })
+```
+
+## Mapa de anomalia média
+```{r}
+# kgr_maps |>
+#   group_by(longitude, latitude) |>
+#   summarise(
+#     anomaly_xco2_mean = mean(xco2_anomaly, na.rm=TRUE)
+#   ) |>
+#   ggplot(aes(x=longitude, y=latitude)) +
+#   geom_tile(aes(fill = anomaly_xco2_mean)) +
+#   scale_fill_viridis_c(option = "inferno") +
+#   coord_equal() +
+#   labs(x="Longitude",
+#        y="Latitude",
+#        fill="mean_anomaly_xco2") +
+#   theme_bw()
+```
+
+
+```{r}
+# PASSO 1: listar só SIF (como você já fez)
+list_rds <- list.files(
+  "../output/mapas/",
+  pattern = "^kgr-sif-.*\\.rds$",
+  full.names = TRUE
+)
+
+# PASSO 2: leitor robusto (ano + época com variações e case-insensitive)
+rds_reader <- function(path){
+  nm   <- basename(path)
+  info <- nm |>
+    stringr::str_remove("\\.rds$") |>
+    stringr::str_remove("^kgr-sif-")
+
+  year <- stringr::str_extract(info, "(?i)20\\d{2}")
+
+  epoca_n <- dplyr::case_when(
+    stringr::str_detect(info, "(?i)Jan[_-]?Jun") ~ 1L,
+    stringr::str_detect(info, "(?i)Jul[_-]?(Dec|Dez)") ~ 2L,
+    stringr::str_detect(info, "(?i)ep(oca)?[_\\s-]*1") ~ 1L,
+    stringr::str_detect(info, "(?i)(H|S|semestre)[\\._\\s-]*1") ~ 1L,  # H1/S1/Semestre1
+    stringr::str_detect(info, "(?i)ep(oca)?[_\\s-]*2") ~ 2L,
+    stringr::str_detect(info, "(?i)(H|S|semestre)[\\._\\s-]*2") ~ 2L,  # H2/S2/Semestre2
+    TRUE ~ NA_integer_
+  )
+
+  readr::read_rds(path) |>
+    dplyr::transmute(
+      latitude,
+      longitude,
+      daily_sif757 = var1.pred,
+      year_epoca_label = dplyr::if_else(!is.na(year) & !is.na(epoca_n),
+                                        paste0(year, "/epoca ", epoca_n),
+                                        NA_character_)
+    )
+}
+
+# PASSO 3: empilhar e ordenar (garante 1 antes de 2)
+kgr_maps_sif <- purrr::map_dfr(list_rds, rds_reader) |>
+  dplyr::filter(!is.na(year_epoca_label)) |>
+  tidyr::separate_wider_delim(year_epoca_label, delim = "/epoca ",
+                              names = c("year","ep"),
+                              cols_remove = FALSE) |>
+  dplyr::mutate(ep = as.integer(ep)) |>
+  dplyr::arrange(year, ep) |>
+  dplyr::mutate(year_epoca_label = factor(year_epoca_label,
+                                          levels = unique(year_epoca_label))) |>
+  dplyr::select(-year, -ep)
+
+# PASSO 4: boxplot
+kgr_maps_sif |>
+  ggplot2::ggplot(ggplot2::aes(x = year_epoca_label, y = daily_sif757)) +
+  ggplot2::geom_boxplot(fill = "gray") +
+  ggplot2::labs(
+    title = "Distribuição de SIF757 por Ano e Época",
+    x = "Ano e Época",
+    y = "SIF 757"
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+
+
+```
+```{r}
+kgr_maps_sif |> 
+  group_by(year_epoca_label) |> 
+  ggplot(aes(year_epoca_label,daily_sif757)) +
+  geom_boxplot(fill="orange")+
+  theme_bw()
+```
+```{r}
+kgr_join_sif <- dplyr::bind_cols(
+  kgr_maps_sif,
+  dplyr::select(kgr_maps_anomal, xco2_anomalia)
+)
+
+kgr_join_sif |>
+  ggplot2::ggplot(ggplot2::aes(x = xco2_anomalia, y = daily_sif757)) +
+  ggplot2::geom_point()
+
+# defina as chaves em comum (ajuste se usar outras)
+kgr_join_sif |>
+  dplyr::left_join(
+    kgr_maps_anomal |>
+      dplyr::select(latitude, longitude, year_epoca_label, xco2_anomalia),
+    by = c("latitude", "longitude", "year_epoca_label")
+  )
+
+kgr_join_sif |>
+  ggplot2::ggplot(ggplot2::aes(x = xco2_anomalia, y = daily_sif757)) +
+  ggplot2::geom_hex(bins = 80) +
+  ggplot2::scale_fill_gradientn(colors = c("blue", "yellow", "red")) +
+  ggplot2::theme_bw()
+```
+
+```{r}
+# 1) Junte as duas variáveis no mesmo grid e período
+#    (ajuste o nome da coluna SIF se no seu objeto for, p.ex., 'daily_sif757')
+df_xy <- kgr_join_sif %>%
+  select(latitude, longitude, year_epoca_label, xco2_anomalia) %>%
+  inner_join(
+    kgr_maps_sif %>% select(latitude, longitude, year_epoca_label, daily_sif757),  # <- troque aqui se necessário
+    by = c("latitude","longitude","year_epoca_label")
+  )
+
+# 2) Abra em wide: uma matriz por variável, colunas = year_epoca_label
+wide_xco2 <- df_xy %>%
+  select(latitude, longitude, year_epoca_label, xco2_anomalia) %>%
+  pivot_wider(names_from = year_epoca_label, values_from = xco2_anomalia)
+
+wide_sif <- df_xy %>%
+  select(latitude, longitude, year_epoca_label, daily_sif757) %>%
+  pivot_wider(names_from = year_epoca_label, values_from = daily_sif757)
+
+# 3) Deixe apenas as colunas (labels) comuns e na mesma ordem
+X <- wide_xco2 %>% select(-latitude, -longitude)
+Y <- wide_sif  %>% select(-latitude, -longitude)
+
+common <- intersect(names(X), names(Y))
+X <- as.matrix(select(X, all_of(common)))
+Y <- as.matrix(select(Y, all_of(common)))
+
+# 4) Correlação entre colunas de X (xco2_anomalia) e Y (sif_757)
+M <- cor(X, Y, use = "pairwise.complete.obs", method = "pearson")
+rownames(M) <- common
+colnames(M) <- common
+
+# 5) Plot
+corrplot::corrplot(M, method = "color", type = "upper", diag = FALSE,
+                   tl.col = "black", tl.srt = 45)
+
+
+# --- rotular linhas (anomalia) e colunas (sif)
+labs <- common
+rownames(M) <- paste0("anomalia_", labs)
+colnames(M) <- paste0("sif_",      labs)
+
+# --- (opcional) ordenar por época 1 depois época 2, e por ano
+is_e1 <- grepl("epoca\\s*1|Jan_Jun", labs, ignore.case = TRUE)
+get_year <- function(s) suppressWarnings(as.integer(sub("^([0-9]{4}).*$", "\\1", s)))
+ord <- order(!is_e1, get_year(labs))  # E1 primeiro, depois E2; dentro, ordena por ano
+
+M_ord <- M[ord, ord, drop = FALSE]
+
+# --- plotar
+corrplot::corrplot(M_ord,
+                   method = "color",
+                   tl.col = "black")
+# 
+# M = cor(mtcars)
+# corrplot(M, method = 'number') # colorful number
+```
+
+
+```{r}
+kgr_join_sif_xco2 <- dplyr::bind_cols(
+  kgr_maps_sif,
+  dplyr::select(kgr_maps, xco2)
+)
+
+kgr_join_sif_xco2 |>
+  ggplot2::ggplot(ggplot2::aes(x = xco2, y = daily_sif757)) +
+  ggplot2::geom_point()
+
+# defina as chaves em comum (ajuste se usar outras)
+kgr_join_sif_xco2 |>
+  dplyr::left_join(
+    kgr_maps |>
+      dplyr::select(latitude, longitude, year_epoca_label, xco2),
+    by = c("latitude", "longitude", "year_epoca_label")
+  )
+
+kgr_join_sif_xco2 |>
+  ggplot2::ggplot(ggplot2::aes(x = xco2, y = daily_sif757)) +
+  ggplot2::geom_hex(bins = 80) +
+  ggplot2::scale_fill_gradientn(colors = c("blue", "yellow", "red")) +
+  ggplot2::theme_bw()
+```
+```{r}
+# 1) Junte as duas variáveis no mesmo grid e período
+#    (ajuste o nome da coluna SIF se no seu objeto for, p.ex., 'daily_sif757')
+df_xy <- kgr_join_sif_xco2 %>%
+  select(latitude, longitude, year_epoca_label, xco2) %>%
+  inner_join(
+    kgr_maps_sif %>% select(latitude, longitude, year_epoca_label, daily_sif757),  # <- troque aqui se necessário
+    by = c("latitude","longitude","year_epoca_label")
+  )
+
+# 2) Abra em wide: uma matriz por variável, colunas = year_epoca_label
+wide_xco2 <- df_xy %>%
+  select(latitude, longitude, year_epoca_label, xco2) %>%
+  pivot_wider(names_from = year_epoca_label, values_from = xco2)
+
+wide_sif <- df_xy %>%
+  select(latitude, longitude, year_epoca_label, daily_sif757) %>%
+  pivot_wider(names_from = year_epoca_label, values_from = daily_sif757)
+
+# 3) Deixe apenas as colunas (labels) comuns e na mesma ordem
+X <- wide_xco2 %>% select(-latitude, -longitude)
+Y <- wide_sif  %>% select(-latitude, -longitude)
+
+common <- intersect(names(X), names(Y))
+X <- as.matrix(select(X, all_of(common)))
+Y <- as.matrix(select(Y, all_of(common)))
+
+# 4) Correlação entre colunas de X (xco2_anomalia) e Y (sif_757)
+M <- cor(X, Y, use = "pairwise.complete.obs", method = "pearson")
+rownames(M) <- common
+colnames(M) <- common
+
+# 5) Plot
+corrplot::corrplot(M, method = "color", type = "upper", diag = FALSE,
+                   tl.col = "black", tl.srt = 45)
+```
+
+
+######### TRAZENDO DADOS NASA POWER
+```{r}
+data_set_nasa_power <- readr::read_rds("../data/dados_nasapower_completo.rds")
+```
+
+```{r}
+data_set_nasa_power <- data_set_nasa_power %>%
+  mutate(
+    epoca = case_when(
+      mm %in% 1:6   ~ "Jan_Jun",
+      mm %in% 7:12  ~ "Jul_Dez"
+    )
+  )
+head(data_set_nasa_power)
+```
+
+
+```{r}
+plot_climograma <- data_set_nasa_power |> 
+  select(yyyymmdd, t2m_max, t2m_min, t2m, prectotcorr) |> 
+  pivot_longer(cols = t2m_max:t2m,
+               names_to = "variavel",
+               values_to = "valores") |> 
+  mutate(
+    variavel = case_when(
+      variavel == "t2m_max" ~ "Maxima",
+      variavel == "t2m" ~ "Media",
+      variavel == "t2m_min" ~ "Minima"
+    )
+  ) |> 
+  ggplot(aes(x = yyyymmdd)) +
+  # barras de precipitação (em escala secundária)
+  geom_line(aes(y = valores, color = variavel), size = .25) +
+  geom_col(aes(y = prectotcorr * 0.2),  # ajuste o fator (0.05) conforme a escala
+           fill = "skyblue4") +
+  # linhas de temperatura
+  theme_bw() +
+  scale_color_manual(values = c("gray", "black", "darkgray")) +
+  scale_y_continuous(
+    name = "Temperatura (oC)",
+    limits = c(0, 40), 
+    sec.axis = sec_axis(~./0.3, name = "Precipitacao (mm)") # inverso do fator usado
+  ) +
+  labs(
+    color = "",
+    x = "Data"
+  ) +
+  theme(
+    legend.position = "top"
+  ) 
+print(plot_climograma)
+```
+
+```{r}
+# -----------------------------------------------------------
+# 1. PREPARAÇÃO: CALCULAR A MÉDIA PARA CADA ANO-ÉPOCA (SEM MUDANÇAS AQUI)
+# -----------------------------------------------------------
+dados_agregados_ano_epoca <- data_set_nasa_power |>
+ group_by(year, epoca) |> 
+ summarise(
+   t2m_max      = mean(t2m_max, na.rm = TRUE),
+   t2m_min      = mean(t2m_min, na.rm = TRUE),
+   t2m          = mean(t2m, na.rm = TRUE),
+   prectotcorr = mean(prectotcorr, na.rm = TRUE),
+   .groups = "drop"
+ )
+
+
+# -----------------------------------------------------------
+# 2. PLOTAGEM: USAR O DATASET AGREGADO POR ANO-ÉPOCA (MUDANÇAS ABAIXO)
+# -----------------------------------------------------------
+plot_climograma_ano_epoca <- dados_agregados_ano_epoca |>
+ # NOVO PASSO: CRIAÇÃO DO FATOR ORDENADO
+ mutate(
+   # 1. Cria a string de interação (ex: "2020.jan_jun")
+   label_ano_epoca = paste(year, epoca, sep = "."),
+   
+   # 2. Transforma em FATOR com NÍVEIS ORDENADOS
+   # Usamos 'order(year, epoca)' para garantir que 
+   # a ordem seja primeiro por ano (2020, 2021...) 
+   # e depois pela época (jan_jun, jul_dez) dentro de cada ano.
+   label_ano_epoca_ordenado = factor(
+     label_ano_epoca, 
+     levels = unique(label_ano_epoca[order(year, epoca)])
+   )
+ ) |>
+ pivot_longer(cols = t2m_max:t2m,
+              names_to = "variavel",
+              values_to = "valores") |> 
+ mutate(
+   variavel = case_when(
+     variavel == "t2m_max" ~ "Maxima",
+     variavel == "t2m" ~ "Media",
+     variavel == "t2m_min" ~ "Minima"
+   )
+ ) |> 
+ 
+ # MUDANÇA AQUI: Usar a nova coluna ORDENADA no eixo X
+ ggplot(aes(x = label_ano_epoca_ordenado)) + 
+ 
+ # As linhas de temperatura
+ geom_line(aes(y = valores, color = variavel, group = variavel), linewidth = 1.0) +
+ geom_point(aes(y = valores, color = variavel), size = 2) +
+ 
+ # As barras de precipitação
+ geom_col(aes(y = prectotcorr * 0.2), 
+          fill = "skyblue4", width = 0.5) +
+ 
+ theme_bw() +
+ scale_color_manual(values = c("gray", "black", "darkgray")) +
+ scale_y_continuous(
+   name = "Temperatura (oC)",
+   limits = c(0, 40), 
+   # O valor de 0.3 na sec.axis é o valor inverso do seu fator (1/0.2 = 5)
+   # Mudei para 0.2, pois é o inverso de 5, que é o seu fator de escala (0.2).
+   sec.axis = sec_axis(~./0.2, name = "Precipitacao (mm)") 
+ ) +
+ labs(
+   color = "",
+   # MUDANÇA AQUI: Agora a legenda vem do nome da coluna ordenada
+   x = "Ano - Época",
+   title = "Climograma da Média por Ano-Época (Toda a Região)"
+ ) +
+ theme(
+   legend.position = "top",
+   axis.text.x = element_text(angle = 45, hjust = 1) 
+ ) 
+
+print(plot_climograma_ano_epoca)
+```
+
+
+

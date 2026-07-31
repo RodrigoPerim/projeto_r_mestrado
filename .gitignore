@@ -1,0 +1,13 @@
+.Rproj.user
+.Rhistory
+.RData
+.httr-oauth
+.DS_Store
+.quarto
+/data
+/data-raw
+/escrita-artigo
+/Apresentação
+*.RData
+*.RData
+*.rds

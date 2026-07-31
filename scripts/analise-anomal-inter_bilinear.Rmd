@@ -1,0 +1,251 @@
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  eval = TRUE,
+  comment = "#>"
+)
+```
+
+## Carregando pacotes
+```{r}
+library(tidyverse)
+library(ggridges)
+library(viridis)
+library(scales)
+library(ggpubr)
+library(terra)
+library(geobr)
+library(gstat)
+library(vegan)
+library(dplyr)
+source("../R/my-function.R")
+```
+
+#Carregando polígono do Brasil
+```{r}
+
+country_br <- geobr::read_country(showProgress = FALSE)
+```
+
+# Carregando os dados de xco2 e filtrar
+```{r}
+data_set_xco2 <- readr::read_rds("../data/data-set-xco2.rds") |>
+  dplyr::filter(
+    longitude >= -59.7700 & longitude <= -49.8361,
+    latitude >= -12.3561 & latitude <= -1.6058
+  ) |>
+  dplyr::mutate(
+    time = lubridate::as_datetime(time, tz = "America/Sao_Paulo"),
+    year = lubridate::year(time),
+    month = lubridate::month(time),
+    day = lubridate::day(time),
+    date = lubridate::as_date(time)
+  )
+
+data_set_xco2_anomal <- data_set_xco2 |>
+  dplyr::filter(xco2_quality_flag == 0) |>
+  dplyr::group_by(date) |>
+  tidyr::nest() |>
+  dplyr::mutate(nobs = purrr::map_int(data, nrow)) |>  
+  dplyr::filter(nobs >= 5) |>
+  tidyr::unnest(data) |>  
+  dplyr::group_by(year, month) |> 
+  dplyr::mutate(
+    xco2_anomalia = xco2 - median(xco2, na.rm = TRUE),  # mantém sua lógica
+    .after = xco2
+  ) |> 
+  dplyr::ungroup()
+
+# Visualizar estrutura
+dplyr::glimpse(data_set_xco2_anomal)
+
+# Salvar resultado
+readr::write_rds(data_set_xco2_anomal, "../data/data-set-xco2-anomalia.rds")
+```
+
+# Criando coluna de semestre
+```{r}
+data_set_xco2_anomal <- data_set_xco2_anomal %>%
+  mutate(
+    epoca = case_when(
+      month %in% 1:6   ~ "Jan_Jun",
+      month %in% 7:12  ~ "Jul_Dez"
+    )
+  )
+head(data_set_xco2)
+```
+
+# Análise da regressão linear simples para caracterização da tendencia XCO2
+```{r}
+mod_trend_xco2 <- lm(xco2 ~ year,
+                      data = data_set_xco2_anomal |>
+                        filter(xco2_quality_flag == 0) |>
+                        drop_na() |>
+                        mutate( year = year - min(year))
+ )
+```
+
+# retirando a tendencia e separando por quadrimestre, estou retirando # a tendencia e substituindo o arquivo que existia com tendencia, #para o sem tendencia
+```{r}
+ a_co2 <- mod_trend_xco2$coefficients[[1]]
+ b_co2 <- mod_trend_xco2$coefficients[[2]]
+
+ data_set_xco2_anomal_sem_tendencia <- data_set_xco2_anomal |>
+   filter(xco2_quality_flag == 0,
+          year >= 2020 & year <= 2025) |>
+   mutate(
+     year_modif = year -min(year),
+     xco2_est = a_co2+b_co2*year_modif,
+     delta = xco2_est-xco2,
+     xco2_detrend = (a_co2-delta) - (mean(xco2) - a_co2)
+   ) |>
+   select(-c( time, xco2_quality_flag,xco2_incerteza,
+             path,year_modif:delta)) |>
+   rename(xco2_tend = xco2,
+          xco2_stend= xco2_detrend) |>
+   mutate(
+     xco2_anomalia = xco2_stend - median(xco2_stend, na.rm = TRUE),
+     .after = xco2_stend
+   ) |>
+   ungroup()
+```
+
+
+# Interpolação Bilinear
+
+```{r}
+# extensão e resolução
+dist_grid <- 0.25
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <- -1.6058
+grid_quadrante <- expand.grid(
+  longitude = seq(min_lon, max_lon, dist_grid),
+  latitude = seq(min_lat, max_lat, dist_grid)
+)
+r_template <- rast(
+  xmin = min_lon, xmax = max_lon,
+  ymin = min_lat, ymax = max_lat,
+  resolution = c(dist_grid, dist_grid), crs = "EPSG:4326"
+)
+```
+
+```{r}
+# aqui eu escolho o que vai ser levado, ex: xco2, lat e long
+pts <- vect(
+  data_set_xco2_anomal |> select(longitude, latitude, xco2),
+  geom = c("longitude","latitude"),
+  crs = "EPSG:4326"
+)
+
+```
+
+```{r}
+r_mean <- rasterize(pts, r_template, field = "xco2", fun = "mean")
+```
+
+
+```{r}
+grid_pts <- vect(grid_quadrante, geom = c("longitude","latitude"), crs = "EPSG:4326")
+```
+
+```{r}
+# Bilinear no grid
+bilinear_grid <- terra::extract(r_mean, grid_pts, method = "bilinear", xy = TRUE)
+
+nm <- names(bilinear_grid)
+bilinear_col <- which(nm == "lyr.1")
+if (length(bilinear_col) == 1) names(bilinear_grid)[bilinear_col] <- "mean"
+
+# anexar ao grid
+grid_quadrante_bilinear <- grid_quadrante |>
+  dplyr::bind_cols(bilinear_grid |> dplyr::select(mean))
+
+```
+
+
+```{r}
+r_template <- rast(
+  xmin = min_lon, xmax = max_lon,
+  ymin = min_lat, ymax = max_lat,
+  resolution = c(dist_grid, dist_grid),
+  crs = "EPSG:4326"
+)
+
+dados_ae <- data_set_xco2_anomal %>%
+  mutate(
+    ano   = year(date),
+    epoca = if_else(month(date) <= 6, "Jan_Jun", "Jul_Dez")
+  )
+# função: bilinear por (ano, epoca)
+bilinear_por_grupo <- function(ano_alvo, epoca_alvo) {
+  df <- dados_ae %>%
+    dplyr::filter(ano == ano_alvo, epoca == epoca_alvo) %>%
+    dplyr::select(longitude, latitude, xco2)
+
+  if (nrow(df) == 0) return(NULL)
+
+  pts <- terra::vect(df, geom = c("longitude", "latitude"), crs = "EPSG:4326")
+
+  r_mean <- terra::rasterize(pts, r_template, field = "xco2", fun = "mean")
+
+  grid_pts <- terra::vect(grid_quadrante, geom = c("longitude","latitude"), crs = "EPSG:4326")
+
+  bil <- terra::extract(r_mean, grid_pts, method = "bilinear", xy = TRUE)
+
+ 
+  val_col <- setdiff(names(bil), c("ID","x","y"))
+  stopifnot(length(val_col) == 1L)
+  names(bil)[names(bil) == val_col] <- "xco2_bilinear"
+
+
+  out <- dplyr::bind_cols(grid_quadrante, bil["xco2_bilinear"]) %>%
+    dplyr::mutate(ano = ano_alvo, epoca = epoca_alvo)
+
+  out
+}
+
+
+comb <- dados_ae %>%
+  dplyr::distinct(ano, epoca) %>%
+  dplyr::arrange(ano, epoca)
+
+grid_bilinear_ano_epoca <- purrr::pmap_dfr(
+  list(comb$ano, comb$epoca),
+  bilinear_por_grupo
+)
+
+ano_plot   <- 2023
+epoca_plot <- "Jul_Dez"
+
+ggplot() +
+  geom_point(data = grid_quadrante, aes(longitude, latitude),
+             color = "grey85", size = 1.8, alpha = 0.5) +
+  geom_point(
+    data = grid_bilinear_ano_epoca %>%
+      dplyr::filter(ano == ano_plot, epoca == epoca_plot, !is.na(xco2_bilinear)),
+    aes(longitude, latitude, fill = xco2_bilinear),
+    shape = 21, size = 3.8, color = "black", stroke = 0.2
+  ) +
+  scale_fill_viridis_c(option = "magma", name = "XCO2 (ppm)") +
+  coord_equal(xlim = c(min_lon, max_lon), ylim = c(min_lat, max_lat), expand = FALSE) +
+  scale_x_continuous("Longitude (°)",
+                     breaks = seq(floor(min_lon), ceiling(max_lon), by = 1),
+                     labels = scales::number_format(accuracy = 1)) +
+  scale_y_continuous("Latitude (°)",
+                     breaks = seq(floor(min_lat), ceiling(max_lat), by = 1),
+                     labels = scales::number_format(accuracy = 1)) +
+  theme_bw() +
+  theme(legend.position = "right", panel.grid.minor = element_blank())
+```
+
+
+
+
+
+

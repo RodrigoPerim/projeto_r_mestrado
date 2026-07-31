@@ -1,0 +1,945 @@
+---
+title: "analise_temporal"
+author: "Rodrigo Perim"
+date: "2025-12-11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  eval = TRUE,
+  comment = "#>"
+)
+```
+
+```{r}
+library(tidyverse)
+library(ggridges)
+library(ggpubr)
+library(geobr)
+library(gstat)
+library(vegan)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(sf)
+
+library(rstan)
+library(shinystan)
+library(ggplot2)
+library(frailtyHL)
+
+
+source("../R/my-function.R")
+```
+
+```{r}
+country_br <- geobr::read_country(showProgress = FALSE)
+```
+
+```{r}
+data_set_sif <- readr::read_rds("../data/data-set-sif-filter.rds") |> 
+  dplyr::filter(
+    quality_flag <= 1)|>
+  dplyr::mutate(
+       trimestre = paste0("T", lubridate::quarter(time))
+  ) 
+```
+
+```{r}
+data_set_sif <- data_set_sif %>%
+  mutate(
+    epoca = case_when(
+      month %in% 1:6   ~ "Jan_Jun",
+      month %in% 7:12  ~ "Jul_Dez"
+    ),
+    daily_sif757 = daily_sif757  # adiciona a coluna da variável
+  )
+
+glimpse(data_set_sif)
+```
+
+```{r}
+data_set_xco2 <- readr::read_rds("../data/data-set-xco2.rds") |>
+  dplyr::filter(
+    longitude >= -59.7700 & longitude <= -49.8361,
+    latitude  >= -12.3561 & latitude  <=  -1.6058
+  ) |>
+  dplyr::mutate(
+    time  = lubridate::as_datetime(time, tz = "America/Sao_Paulo"),
+    year  = lubridate::year(time),
+    month = lubridate::month(time),
+    day   = lubridate::day(time),
+    date  = lubridate::as_date(time),
+    trimestre = paste0("T", lubridate::quarter(time))
+  )
+
+# >>> Anomalia 
+data_set_xco2_anomal <- data_set_xco2 |>
+  dplyr::filter(xco2_quality_flag == 0) |>
+  dplyr::group_by(year, trimestre) |>
+  dplyr::filter(dplyr::n() >= 5) |>                                  
+  dplyr::mutate(
+    xco2_anomalia = xco2 - median(xco2, na.rm = TRUE)                
+  ) |>
+  dplyr::ungroup()
+
+dplyr::glimpse(data_set_xco2_anomal)
+
+readr::write_rds(data_set_xco2_anomal, "../data/data-set-xco2-anomalia.rds")
+##################
+
+# 1. Criar a tabela de médias mensais
+resumo_anomalia <- data_set_xco2_anomal |>
+  dplyr::group_by(year, month) |>
+  dplyr::summarise(
+    media_anomalia = mean(xco2_anomalia, na.rm = TRUE),
+    n_observacoes   = dplyr::n(), # Útil para ver se tem dados suficientes no mês
+    .groups = "drop"
+  )
+
+# Visualizar a tabela
+print(resumo_anomalia)
+writexl::write_xlsx(resumo_anomalia, "../data/resumo_anomalia_xco2.xlsx")
+
+# 2. Gráfico simples para ver a evolução (Opcional, mas ajuda muito)
+library(ggplot2)
+
+ggplot(resumo_anomalia, aes(x = factor(month), y = media_anomalia, group = year, color = factor(year))) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  facet_wrap(~year) + # Separa um gráfico para cada ano
+  theme_minimal() +
+  labs(
+    title = "Média Mensal das Anomalias de XCO2",
+    x = "Mês",
+    y = "Média da Anomalia (ppm)",
+    color = "Ano"
+  )
+
+
+
+
+
+
+
+
+
+
+
+###############
+
+
+data_set_xco2_anomal_temp <- data_set_xco2_anomal |>
+  dplyr::filter(xco2_quality_flag == 0,
+                trimestre %in% c("T4", "T1") )|>
+  dplyr::group_by(year, trimestre) |>
+  dplyr::filter(dplyr::n() >= 5) |>                                  
+  dplyr::mutate(
+    xco2_anomalia = xco2 - median(xco2, na.rm = TRUE),
+    longitude = round(longitude,0),
+    latitude = round(latitude,0)
+  ) |>
+  group_by(longitude,latitude) |>
+  dplyr::ungroup()
+
+  data_set_xco2_anomal_temp$long_lat <-
+  paste0(data_set_xco2_anomal_temp$longitude, data_set_xco2_anomal_temp$latitude)
+#table(table(teste_xco2))
+
+  teste_order <- data_set_xco2_anomal_temp |> 
+  dplyr::arrange(long_lat)
+  
+  
+  teste_order_date <- teste_order |> 
+    dplyr::group_by(date, long_lat) |> 
+    dplyr::mutate(
+      median_anomal = median(xco2_anomalia, na.rm = TRUE) )|> 
+  dplyr::ungroup()
+  
+  
+  teste_final <- teste_order_date %>%
+  dplyr::group_by(date, long_lat) %>%
+  dplyr::slice_head(n = 1) |> 
+  dplyr::select(longitude, latitude, trimestre,year, month, day, date, median_anomal)
+  
+  teste_final <- teste_final |> 
+    arrange(long_lat)
+  length(unique(teste_final$long_lat))
+  
+  
+  teste_final_t4 <- dplyr::filter(as.data.frame(teste_final[teste_final$trimestre == "T4",]), median_anomal==max(median_anomal), .by=long_lat:year)
+  
+teste_final_t1 <- dplyr::filter(as.data.frame(teste_final[teste_final$trimestre == "T1",]), median_anomal==min(median_anomal), .by=long_lat:year)
+
+teste_final_t1$time <- teste_final_t1$date-as.Date(paste0(teste_final_t1$year-1, "-10-01"))
+
+teste_final_t4$year <- teste_final_t4$year+1
+
+dados_consolidados <- dplyr::inner_join(
+  x = teste_final_t4,          # Sua base do T4 (Alvo)
+  y = teste_final_t1,          # Sua base do T1 (Fonte)
+  by = c("long_lat","year"),       # A coluna que liga as duas 
+  suffix = c("_t4", "_t1") # Sufixos para diferenciar colunas com mesmo nome (ex: xco2_t4 e xco2_t1)
+)
+dados_consolidados |> 
+  arrange(long_lat)
+
+dados_consolidados$dif_t4_t1 <- dados_consolidados$median_anomal_t4-dados_consolidados$median_anomal_t1
+summary(dados_consolidados$dif_t4_t1)
+sum(dados_consolidados$dif_t4_t1<0)
+
+par(mfrow = c(1,2))
+hist(dados_consolidados$dif_t4_t1)
+boxplot(dados_consolidados$dif_t4_t1)
+
+
+dados_consolidados$cens <- as.numeric(dados_consolidados$dif_t4_t1>0)
+
+table(table(dados_consolidados$long_lat))
+
+```
+
+```{r}
+# --- 1. Definir o seu "Grid Quadrante" (Bounding Box) ---
+limites_recorte <- c(
+  xmin = -59.7700, 
+  xmax = -49.8361, 
+  ymin = -12.3561, 
+  ymax = -1.6058
+)
+
+# --- 2. Preparar o Mapa de Fundo ---
+# Baixamos o Brasil, mas vamos cortá-lo imediatamente
+mapa_br <- read_country(year = 2020, showProgress = FALSE)
+
+# A MÁGICA: Cortar o mapa para sobrar apenas o que está dentro do seu quadrante
+# SuppressWarnings é usado porque o st_crop costuma avisar que cortou polígonos, o que é normal.
+mapa_fundo_local <- suppressWarnings(st_crop(mapa_br, limites_recorte))
+
+# --- 3. Plotar ---
+ggplot() +
+  # Camada 1: O Mapa Geográfico Recortado (Fundo)
+  geom_sf(data = mapa_fundo_local, 
+          fill = "gray95",    # Cor de terra
+          color = "gray60",   # Cor da borda do estado/país
+          size = 0.5) +       # Espessura da linha da borda
+  
+  # Camada 2: Seus Dados (Tiles)
+  geom_tile(data = dados_consolidados, 
+            aes(x = longitude_t4, y = latitude_t4, fill = dif_t4_t1),
+            width = 1, height = 1) + 
+  
+  # Camada 3: Escala de Cores
+  scale_fill_gradient2(low = "#2166ac", 
+                       mid = "#f7f7f7", 
+                       high = "#b2182b", 
+                       midpoint = 0, 
+                       name = "Diferença\n(T4 - T1)") +
+  
+  # Facet por ano
+  facet_wrap(~year) +
+  
+  # Ajuste de Coordenadas (Garante que o gráfico não mostre nada além do corte)
+  coord_sf(xlim = c(limites_recorte["xmin"], limites_recorte["xmax"]),
+           ylim = c(limites_recorte["ymin"], limites_recorte["ymax"])) +
+  
+  theme_minimal() +
+  labs(title = "Variação Espacial XCO2 na Região de Interesse",
+       subtitle = "Recorte: Lat [-12.3, -1.6] | Long [-59.7, -49.8]",
+       x = "Longitude", y = "Latitude")
+```
+
+```{r}
+# Instalar pacote se necessário
+# install.packages("ggridges")
+library(ggridges)
+
+ggplot(dados_consolidados, aes(x = dif_t4_t1, y = as.factor(year), fill = stat(x))) +
+  
+  # O gráfico de Ridgeline
+  geom_density_ridges_gradient(scale = 1.5, rel_min_height = 0.01) +
+  
+  # Linha vertical no Zero para referência
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  
+  # Colorir conforme o valor do eixo X (mesma lógica do mapa)
+  scale_fill_gradient2(low = "#2166ac", mid = "#f7f7f7", high = "#b2182b", midpoint = 0) +
+  
+  theme_ridges() + 
+  theme(legend.position = "none") + # Remove legenda pois a cor é redundante com o eixo X
+  
+  labs(title = "Evolução da Diferença (T4 - T1) por Ano",
+       subtitle = "Distribuição deslocada para a direita indica aumento da anomalia no T4 em relação ao T1",
+       x = "Diferença de Anomalia (ppm)",
+       y = "Ciclo (Ano)")
+```
+
+```{r}
+# library(ggplot2)
+# library(dplyr)
+# library(sf)
+# 
+# # 1. Isolar apenas onde houve inversão (T1 > T4)
+# inversao_sazonal <- dados_consolidados |> 
+#   dplyr::filter(dif_t4_t1 < 0)
+# 
+# # Vamos ver a estatística desses pontos
+# summary(inversao_sazonal$median_anomal_t1)
+# # Se a mediana for POSITIVA, confirma sua teoria:
+# # O T1 não só foi maior que o T4, como ficou acima da média geral do ano.
+# 
+# # 2. Mapa dos Pontos Críticos (Onde o sumidouro falhou?)
+# ggplot() +
+#   # Mapa de fundo recortado (usando o mapa_fundo_local que criamos antes)
+#   geom_sf(data = mapa_fundo_local, fill = "gray90", color = "white") +
+#   
+#   # Plotar APENAS os pontos onde T1 > T4
+#   geom_tile(data = inversao_sazonal, 
+#             aes(x = longitude_t4, y = latitude_t4, fill = median_anomal_t1),
+#             width = 1, height = 1) +
+#   
+#   # Escala: Quanto mais vermelho, mais alto estava o CO2 no T1 (o que é péssimo)
+#   scale_fill_viridis_c(option = "magma", direction = -1, 
+#                        name = "Anomalia no T1\n(ppm)") +
+#   
+#   facet_wrap(~year) +
+#   
+#   coord_sf(xlim = c(limites_recorte["xmin"], limites_recorte["xmax"]),
+#            ylim = c(limites_recorte["ymin"], limites_recorte["ymax"])) +
+#   
+#   theme_dark() +
+#   labs(title = "Áreas de Inversão Sazonal (Onde T1 > T4)",
+#        subtitle = "A cor indica a intensidade da Anomalia no T1.\nCores quentes = CO2 muito alto justamente na época de chuva.",
+#        x = "Longitude", y = "Latitude")
+```
+
+```{r}
+# library(ggplot2)
+# library(dplyr)
+# 
+# # 1. Garantir o cálculo dos dias (caso precise rodar de novo)
+# dados_consolidados <- dados_consolidados |> 
+#   dplyr::mutate(
+#     dias_ate_pico = as.numeric(date_t1 - as.Date(paste0(year - 1, "-10-01")))
+#   )
+# 
+# # 2. Dataframe auxiliar para os rótulos (Jan/Fev/Mar)
+# rotulos_eixo <- data.frame(
+#   x_pos = c(92, 123, 151),
+#   label = c("Jan", "Fev", "Mar")
+# )
+# 
+# # 3. Plotagem com Estilo de "Caixas"
+# ggplot(dados_consolidados, aes(x = dias_ate_pico)) +
+#   
+#   # Histograma com cor sólida e borda branca para definição
+#   geom_histogram(binwidth = 5, fill = "#2c7fb8", color = "white", alpha = 0.9) +
+#   
+#   # Linhas de referência verticais (fundo)
+#   geom_vline(xintercept = c(92, 123, 151), linetype = "dashed", color = "gray50", size = 0.3) +
+#   
+#   # Rótulos dos meses (Jan/Fev/Mar)
+#   geom_text(data = rotulos_eixo, 
+#             aes(x = x_pos, y = 0, label = label), 
+#             inherit.aes = FALSE, 
+#             vjust = -1.5,     # Levanta o texto para não encostar no eixo
+#             color = "black", 
+#             fontface = "bold",
+#             size = 3.5) +
+#   
+#   # Separação por Ano
+#   facet_wrap(~year, scales = "free_y") + # scales="free_y" ajusta a altura se um ano tiver muito mais dados que outro
+#   
+#   # --- ESTILIZAÇÃO DAS CAIXAS ---
+#   theme_bw() + # Tema base Preto e Branco (já traz bordas)
+#   
+#   theme(
+#     # 1. Título do Ano (A tarja cinza escura em cima)
+#     strip.background = element_rect(fill = "#2c3e50", color = "black"),
+#     strip.text = element_text(color = "white", face = "bold", size = 12),
+#     
+#     # 2. Borda da Caixa (O contorno do gráfico)
+#     panel.border = element_rect(color = "black", fill = NA, size = 1),
+#     
+#     # 3. Espaçamento entre as caixas (para ficarem bem separadas)
+#     panel.spacing = unit(1, "cm"),
+#     
+#     # 4. Limpeza visual interna
+#     panel.grid.minor = element_blank(), # Remove grades pequenas
+#     panel.grid.major.x = element_blank(), # Remove grades verticais (já temos as linhas tracejadas)
+#     
+#     # 5. Texto dos eixos
+#     axis.title = element_text(face = "bold", size = 11),
+#     axis.text = element_text(color = "black")
+#   ) +
+#   
+#   labs(title = "Cronologia do Pico de Absorção de Carbono",
+#        subtitle = "Quantos dias após 01-Out a região atinge o mínimo de CO2 (Máximo Sequestro)?",
+#        x = "Dias decorridos desde o início do ano hidrológico (01-Out)",
+#        y = "Quantidade de Pixels (Frequência)")
+```
+```{r}
+# ggplot() +
+#   # Fundo
+#   geom_sf(data = mapa_fundo_local, fill = "gray95", color = "gray60") +
+#   
+#   # Dados de Tempo
+#   geom_tile(data = dados_consolidados, 
+#             aes(x = longitude_t4, y = latitude_t4, fill = dias_ate_pico),
+#             width = 1, height = 1) + 
+#   
+#   # Escala de cores para TEMPO
+#   # Roxo/Azul = Rápido (Cedo, logo em Janeiro)
+#   # Amarelo/Verde = Lento (Tarde, só em Março)
+#   scale_fill_viridis_c(option = "viridis", direction = -1,
+#                        name = "Dias até\no Pico") +
+#   
+#   facet_wrap(~year) +
+#   
+#   coord_sf(xlim = c(limites_recorte["xmin"], limites_recorte["xmax"]),
+#            ylim = c(limites_recorte["ymin"], limites_recorte["ymax"])) +
+#   
+#   theme_minimal() +
+#   labs(title = "Velocidade de Resposta do Sumidouro",
+#        subtitle = "Cores claras: A vegetação atinge o pico de absorção rápido.\nCores escuras: Demora mais para atingir o pico.",
+#        x = "Longitude", y = "Latitude")
+```
+
+```{r}
+############
+# Adicionar no mesmo banco, sif, temperatura (acumulado ou média), 
+# precipitação acumulado e fogo.
+```
+
+
+```{r}
+df_nasapower <- readRDS("../data/dados_nasapower_completo.rds") %>%
+  select(
+    lon, 
+    lat, 
+    year,           
+    mm,     # Verifique se no arquivo original é 'month' ou 'MO'
+    dd,       # Verifique se no arquivo original é 'day' ou 'DY'
+    date,           
+    t2m,            
+    prectotcorr 
+  ) %>%
+  mutate(date = as.Date(date))
+
+# Atualizando o data frame com lat e lon arredondados
+df_nasapower <- df_nasapower %>%
+  mutate(
+    lon = as.integer(round(lon, 0)),
+    lat = as.integer(round(lat, 0))
+  )
+
+# Verificar o resultado
+df_nasapower
+
+```
+
+```{r}
+# library(dplyr)
+# library(lubridate)
+# library(tidyr)
+# 
+# # 1. Preparar a base climática PRIMEIRO
+# # (Aqui filtramos e calculamos os acumulados)
+# clima_resumo <- df_nasapower %>%
+#   # Filtro espacial para não processar o que não existe na sua base de 108 linhas
+#   inner_join(coords_estudo, by = c("lon" = "longitude_t1", "lat" = "latitude_t1")) %>%
+# 
+#   # Definir Safra
+#   mutate(safra = if_else(month(date) >= 10, year(date), year(date) - 1)) %>%
+# 
+#   # Calcular acumulados
+#   group_by(lon, lat, safra) %>%
+#   arrange(date) %>%
+#   mutate(
+#     chuva_acum_desde_out = cumsum(replace_na(prectotcorr, 0)),
+#     temp_sum_desde_out = cumsum(replace_na(t2m, 0))
+#   ) %>%
+#   # IMPORTANTE: Pegamos apenas o valor final acumulado de cada safra/local
+#   # Se você quer o total da safra, usamos o slice_tail ou summarize
+#   slice_tail(n = 1) %>%
+#   ungroup() %>%
+#   select(lon, lat, safra, chuva_acum_desde_out, temp_sum_desde_out)
+# 
+# # 2. Juntar na sua base principal de 108 linhas
+# # Vamos assumir que 'dados_consolidados' também tem uma coluna de ano ou safra para o 'match'
+# df_final <- dados_consolidados %>%
+#   left_join(clima_resumo,
+#             by = c("longitude_t1" = "lon",
+#                    "latitude_t1" = "lat",
+#                    "year" = "safra")) # Ajuste 'year' para o nome da coluna de ano na sua base
+# 
+# # 3. Verificar o resultado
+# df_final
+```
+
+```{r}
+library(dplyr)
+library(lubridate)
+library(tidyr)
+
+# 1. LIMPEZA DA BASE NASA (O passo mais importante agora)
+# Isso garante que cada par (coordenada + data) exista apenas uma vez
+df_nasapower_limpo <- df_nasapower %>%
+  distinct(lon, lat, date, .keep_all = TRUE)
+
+# 2. Preparar os alvos (suas 108 linhas)
+df_alvo <- dados_consolidados %>%
+  mutate(id_ponto = row_number()) %>%
+  mutate(
+    # Certifique-se que 'year' e 'time' são numéricos
+    data_inicio = as.Date(paste0(year - 1, "-10-01")),
+    data_evento = data_inicio + days(as.numeric(time))
+  )
+
+# 3. Processar o clima usando a base limpa
+clima_calculado <- df_alvo %>%
+  select(id_ponto, longitude_t1, latitude_t1, data_inicio, data_evento) %>%
+  # Join com a base LIMPA
+  inner_join(df_nasapower_limpo, by = c("longitude_t1" = "lon", "latitude_t1" = "lat")) %>%
+  # Filtrar o intervalo exato
+  filter(date >= data_inicio & date <= data_evento) %>%
+  group_by(id_ponto) %>%
+  summarise(
+    chuva_acumulada = sum(prectotcorr, na.rm = TRUE),
+    temp_sum        = sum(t2m, na.rm = TRUE),
+    dias_contados   = n()
+  )
+
+# 4. Unir de volta à base principal
+df_final <- df_alvo %>%
+  left_join(clima_calculado, by = "id_ponto") %>%
+  select(-id_ponto)
+
+# Verificação: O valor de 'dias_contados' deve ser próximo ao seu 'time'
+df_final
+```
+
+
+```{r}
+
+# head(dados_consolidados)
+# 
+# 
+# df_final <- dados_consolidados %>%
+#   # Cruzamos a data do evento (date_t1) com a data do clima
+#   left_join(
+#     df_clima_preparado %>%
+#       select(lon, lat, date, chuva_acum_desde_out, temp_sum_desde_out),
+#     by = c("longitude_t1" = "lon", "latitude_t1" = "lat", "date_t1" = "date")
+#   )
+# 
+# # Verificar o resultado
+# print(dados_consolidados)
+# 
+# dados_frailty <- dados_consolidados[, c("long_lat", "time", "cens", "year")]
+# dados_frailty$time <- ( dados_frailty$time - min(dados_frailty$time) + 1)
+# summary(dados_frailty)
+# dados_frailty$id <- NA
+# un_longlat <- unique(dados_frailty$long_lat)
+# count <- 1
+# for(i in 1:length(un_longlat)){
+#   pos <- which(dados_frailty$long_lat == un_longlat[i])
+#   dados_frailty$id[pos] <- count
+#   count <- count+1
+# }
+# print(dados_frailty)
+```
+#####################
+#####################
+#####################
+DADOS DE FOGO
+
+```{r}
+####### ESSA CHUNK É A QUE CRIOU A BASE DE FOGO
+
+library(terra)
+library(data.table)
+library(dplyr)
+library(stringr)
+
+# 1. Configurações de Caminho
+caminho_pasta <- "../data-raw/fogo/"
+arquivos <- list.files(caminho_pasta, pattern = "\\.tif$", full.names = TRUE)
+
+# Resolução alvo do XCO2
+res_alvo <- 0.2
+
+lista_tabelas <- list()
+
+message("🚀 Iniciando processamento para resolução de 0.2 graus...")
+
+for (i in seq_along(arquivos)) {
+  nome_arq <- basename(arquivos[i])
+  ano_ref <- str_extract(nome_arq, "\\d{4}")
+
+  # Carregar raster
+  r <- rast(arquivos[i])
+
+  # --- PASSO 1: Cálculo do Fator de Agregação ---
+  # Descobrimos quantas vezes o pixel original cabe em 0.2 graus
+  fator <- res_alvo / res(r)[1]
+
+  # --- PASSO 2: Agregação ---
+  # Reduz a resolução. 'fun=mean' dará a proporção de área queimada no bloco
+  # na.rm = TRUE ignora áreas sem informação
+  r_leve <- aggregate(r, fact = fator, fun = "mean", na.rm = TRUE)
+
+  # --- PASSO 3: Conversão para Tabela ---
+  df <- as.data.frame(r_leve, xy = TRUE, na.rm = TRUE)
+
+  if (nrow(df) > 0) {
+    setDT(df) # data.table para máxima performance
+    colnames(df) <- c("lon", "lat", "porc_queim")
+    df[, ano := as.numeric(ano_ref)]
+
+    lista_tabelas[[i]] <- df
+  }
+
+  message("✅ Concluído: ", ano_ref)
+
+  # Limpeza rigorosa de memória
+  rm(r, r_leve, df)
+  gc()
+}
+
+# 4. Unir todas as tabelas em uma única base de dados
+base_fogo_final <- rbindlist(lista_tabelas)
+
+# 5. Salvar em RDS
+saveRDS(base_fogo_final, "../data/base_fogo_consolidada_02.rds")
+
+message("✨ Tudo pronto! Base consolidada com ", nrow(base_fogo_final), " linhas.")
+base_fogo_final <- readRDS("../data/base_fogo_consolidada_02.rds")
+glimpse(base_fogo_final)
+```
+
+```{r}
+library(dplyr)
+library(dplyr)
+library(tidyr) # Para o replace_na
+
+# 1. Carregar os dados de fogo
+df_fogo <- readRDS("../data/base_fogo_consolidada_02.rds")
+
+# 2. Preparar a base de fogo (Sem mexer na base geral)
+df_fogo_ajustada <- df_fogo %>%
+  mutate(
+    lon_ajustada = round(lon / 0.2) * 0.2,
+    lat_ajustada = round(lat / 0.2) * 0.2
+  ) %>%
+  group_by(lon_ajustada, lat_ajustada, ano) %>%
+  # 'hect' representa a área da cicatriz de fogo mapeada
+  summarise(porc_queim = mean(porc_queim, na.rm = TRUE), .groups = "drop")
+
+# 3. Cruzar com a Base Geral
+# IMPORTANTE: Verifique se sua base de 108 linhas se chama 'df_final'
+# Se o nome for outro (ex: dados_consolidados), mude aqui:
+df_final <- df_final %>%
+  left_join(df_fogo_ajustada, 
+            by = c("longitude_t1" = "lon_ajustada", 
+                   "latitude_t1" = "lat_ajustada", 
+                   "year" = "ano")) %>%
+  # Substituir NAs por 0 onde o MapBiomas não detectou cicatrizes
+  mutate(porc_queim = replace_na(porc_queim, 0))
+
+# Aplicando a conversão na base de 108 linhas
+df_final <- df_final %>%
+  mutate(
+    # Multiplica o valor por 100 para ter a porcentagem (0 a 100%)
+    porc_queimada = porc_queim * 100 
+  ) %>%
+  # Opcional: remover a coluna original se não for mais usar
+  select(-porc_queim)
+
+# Para visualizar sem a notação científica (e-04)
+options(scipen = 999)
+
+message("Conversão concluída!")
+head(df_final)
+
+# Salvar o dataframe consolidado na pasta data
+saveRDS(df_final, "../data/df_final.rds")
+
+message("✅ Arquivo df_final.rds salvo com sucesso na pasta data!")
+```
+###################
+###################
+###################
+ADICIONANDO A SIF NO DF_FINAL
+
+```{r}
+library(dplyr)
+library(tidyr)
+
+# 1. Carregar as bases
+# df_final já deve estar no seu environment com as 108 linhas
+data_set_sif <- data_set_sif
+
+# 2. Ajustar a Base de SIF (Mesma lógica do Fogo)
+# Arredondamos para 0.2 para bater com os centros das células do XCO2
+df_sif_ajustada <- data_set_sif %>%
+  mutate(
+    lon_ajustada = round(longitude / 0.2) * 0.2,
+    lat_ajustada = round(latitude / 0.2) * 0.2
+  ) %>%
+  # Agrupamos por coordenada e tempo para ter um valor médio por célula/ano
+  group_by(lon_ajustada, lat_ajustada, year) %>%
+  summarise(sif_mean = mean(daily_sif757, na.rm = TRUE), .groups = "drop")
+
+# 3. Integrar na Base Geral (df_final)
+# Mantemos a estrutura de 108 linhas intacta
+df_final <- df_final %>%
+  left_join(df_sif_ajustada, 
+            by = c("longitude_t1" = "lon_ajustada", 
+                   "latitude_t1" = "lat_ajustada", 
+                   "year" = "year"))
+
+# 4. Salvar a base atualizada
+saveRDS(df_final, "../data/df_final_completo.rds")
+
+message("✅ SIF integrado! Coordenadas mantidas no padrão: ", 
+        df_final$longitude_t1[1], " e ", df_final$latitude_t1[1])
+
+
+# df_final <- df_final %>%
+#   select(-hect.x, -hect.y)
+# 
+# # Verifique se agora está limpo
+# head(df_final)
+```
+
+```{r}
+readRDS("../data/df_final_completo.rds")
+head(df_final)
+
+# Existiam 3 NA's, colocamos o valor de média da SIF para rodar os dados.
+df_final[is.na(df_final$sif_mean),"sif_mean"] <- 0.32346
+summary(df_final)
+
+```
+
+
+```{r}
+
+# df_final <- dados_consolidados %>%
+#   # Cruzamos a data do evento (date_t1) com a data do clima
+#   left_join(
+#     df_clima_preparado %>%
+#       select(lon, lat, date, chuva_acum_desde_out, temp_sum_desde_out),
+#     by = c("longitude_t1" = "lon", "latitude_t1" = "lat", "date_t1" = "date")
+#   )
+# 
+# # Verificar o resultado
+# print(dados_consolidados)
+
+dados_frailty <- df_final[, c("long_lat", "time", "cens", "year","chuva_acumulada", "temp_sum", "porc_queimada", "sif_mean")]
+dados_frailty$time <- ( dados_frailty$time - min(dados_frailty$time) + 1)
+summary(dados_frailty)
+dados_frailty$id <- NA
+un_longlat <- unique(dados_frailty$long_lat)
+count <- 1
+for(i in 1:length(un_longlat)){
+  pos <- which(dados_frailty$long_lat == un_longlat[i])
+  dados_frailty$id[pos] <- count
+  count <- count+1
+}
+print(dados_frailty)
+```
+
+
+
+
+
+
+```{r}
+# data_set_xco2_anomal |> 
+#   filter(month <= 3 | month >= 10 ) |> 
+#   mutate(longitude = round(longitude,1),
+#          latitude = round(latitude,1)) |> 
+#   group_by(longitude,latitude) |> 
+#   summarise(
+#     n=n()
+#   ) |> 
+#   ggplot(aes(longitude,latitude,colour = n)) +
+#   geom_point()
+# 
+# 
+# 
+# 
+# data_set_xco2_anomal |>
+#   mutate(
+#     area = ifelse(latitude <= -7.5, "Agricola","Floresta")
+#   ) |> 
+#   group_by(date,area) |> 
+#   summarise(
+#     xco2_anomalia = mean(xco2_anomalia)
+#   ) |> 
+#   ggplot(aes(x=date,y=xco2_anomalia,color=area)) +
+#   geom_line()
+```
+
+```{r}
+
+# # 1. Preparar os dados: Classificar e Agrupar por Mês
+# data_set_xco2_anomal_plot <- data_set_xco2_anomal |>
+#   mutate(
+#     # Aplica sua regra de corte (Latitude -7.5)
+#     area = ifelse(latitude <= -7.5, "Agricola", "Floresta"),
+#     data_mensal = floor_date(date, "month")
+#   ) |>
+#   
+#   # groupby por Data e por Área para calcular as médias separadas
+#   group_by(data_mensal, area) |>
+#   summarise(
+#     xco2_anomalia_media = mean(xco2_anomalia, na.rm = TRUE),
+#     .groups = "drop"
+#   )
+# 
+# # Gerar o Gráfico de Série Temporal
+# data_set_xco2_anomal_plot |>
+#   ggplot(aes(x = data_mensal, y = xco2_anomalia_media, color = area)) +
+#   geom_line(size = 1) +
+#   geom_point(size = 2) +
+#   
+#   # Linha de referência zero
+#   geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+#   
+# 
+#   scale_x_date(
+#     date_labels = "%b/%Y",  
+#     date_breaks = "3 months" 
+#   ) +
+#   
+#   scale_color_manual(values = c("Agricola" = "orange", "Floresta" = "darkgreen")) +
+#   
+#   labs(
+#     title = "Evolução da Anomalia de XCO2: Agrícola vs Floresta",
+#     subtitle = "Média mensal da anomalia ao longo do tempo",
+#     x = "Mês/Ano",
+#     y = "Anomalia Média de XCO2 (ppm)",
+#     color = "Região"
+#   ) +
+#   
+#   theme_bw() +
+#   
+#   theme(
+#     axis.text.x = element_text(angle = 45, hjust = 1),
+#     legend.position = "bottom" 
+#   )
+```
+
+```{r}
+# library(dplyr)
+# 
+# # 1. Preparar os dados (Filtro Temporal + Arredondamento Espacial)
+# dados_preparados <- data_set_xco2_anomal |>
+#   # Filtra só os meses da safra/chuva
+#   filter(month %in% c(10, 11, 12, 1, 2, 3)) |>
+#   
+#   mutate(
+#     # Lógica do Ciclo (Out/2020 vira ciclo 2021)
+#     ano_ciclo = ifelse(month >= 10, year + 1, year),
+#     
+#     # --- O PULO DO GATO ESPACIAL ---
+#     # Arredonda para 1 casa decimal (~11km). 
+#     # Isso agrupa pixels vizinhos na mesma "célula".
+#     lon_grid = round(longitude, 1),
+#     lat_grid = round(latitude, 1)
+#   )
+# 
+# # 2. Calcular a Censura por Grid
+# dados_censura_grid <- dados_preparados |>
+#   group_by(lon_grid, lat_grid, ano_ciclo) |>
+#   
+#   summarise(
+#     # Verifica se tem dados nos períodos
+#     tem_q4 = any(month >= 10),
+#     tem_q1 = any(month <= 3),
+#     
+#     # Calcula Max e Min (com segurança contra -Inf)
+#     max_q4 = if(any(month >= 10)) max(xco2_anomalia[month >= 10], na.rm = TRUE) else NA_real_,
+#     min_q1 = if(any(month <= 3))  min(xco2_anomalia[month <= 3],  na.rm = TRUE) else NA_real_,
+#     
+#     # Mantém a classificação da área (Agricola/Floresta) baseada na latitude do grid
+#     area = if(first(lat_grid) <= -7.5) "Agricola" else "Floresta",
+#     
+#     .groups = "drop"
+#   ) |>
+#   
+#   # 3. Filtra apenas as células que têm o ciclo completo
+#   filter(tem_q4 & tem_q1) |>
+#   
+#   # 4. Cálculo Final da Censura (Amplitude de Queda)
+#   mutate(
+#     censura = max_q4 - min_q1
+#   )
+# 
+# message("✅ Cálculo da Censura por Grid concluído!")
+# message("Total de células encontradas: ", nrow(dados_censura_grid))
+# glimpse(dados_censura_grid)
+# 
+# # --- BÔNUS: Visualizar o resultado ---
+# # Vamos ver se deu certo plotando um histograma da censura por área
+# library(ggplot2)
+# 
+# dados_censura_grid |>
+#   ggplot(aes(x = censura, fill = area)) +
+#   geom_density(alpha = 0.5) +
+#   geom_vline(xintercept = 0, linetype = "dashed") +
+#   labs(
+#     title = "Distribuição da Censura (Drawdown de Carbono)",
+#     subtitle = "Quanto o CO2 caiu do final do ano (Q4) para o começo (Q1)?",
+#     x = "Censura (Max Q4 - Min Q1)",
+#     y = "Densidade"
+#   ) +
+#   theme_bw()
+```
+
+```{r}
+# library(dplyr)
+# library(knitr)
+# 
+# # Tabela Estatística Descritiva
+# tabela_insights <- dados_censura_grid |>
+#   group_by(area, ano_ciclo) |>
+#   summarise(
+#     # Quantas células de 11km entraram na conta?
+#     n_pixels = n(),
+#     
+#     # Média da Censura (O valor médio da queda de carbono)
+#     censura_media = mean(censura, na.rm = TRUE),
+#     
+#     # Mediana (Melhor que média se tiver outliers)
+#     censura_mediana = median(censura, na.rm = TRUE),
+#     
+#     # Desvio Padrão (Variação: É homogêneo ou cada pixel faz o que quer?)
+#     desvio = sd(censura, na.rm = TRUE),
+#     
+#     # Mínimo e Máximo (Para ver os extremos)
+#     minimo = min(censura, na.rm = TRUE),
+#     maximo = max(censura, na.rm = TRUE),
+#     
+#     .groups = "drop"
+#   ) |>
+#   arrange(ano_ciclo, area)
+# 
+# # Mostra a tabela formatada no console
+# print(tabela_insights)
+# # kable(tabela_insights) # Se quiser copiar pro Word depois
+```
+
+

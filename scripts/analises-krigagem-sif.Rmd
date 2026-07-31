@@ -1,0 +1,1350 @@
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  eval = TRUE,
+  comment = "#>"
+)
+```
+
+## Carregando pacotes
+```{r}
+library(tidyverse)
+library(ggridges)
+library(ggpubr)
+library(geobr)
+library(gstat)
+library(vegan)
+library(dplyr)
+library(ggplot2)
+library(sf)
+source("../R/my-function.R")
+```
+
+# Carregando polígono do Brasil
+```{r}
+country_br <- geobr::read_country(showProgress = FALSE)
+```
+
+# Carregando os dados de sif e filtrar
+```{r}
+data_set_sif <- readr::read_rds("../data/data-set-sif-filter.rds") |> 
+  dplyr::filter(
+    quality_flag <= 1
+  ) |>  
+  dplyr::mutate(
+    time  = lubridate::as_datetime(time, tz = "America/Sao_Paulo"),
+    year  = lubridate::year(time),
+    month = lubridate::month(time),
+    day   = lubridate::day(time),
+    date  = lubridate::as_date(time),
+    trimestre = paste0("T", lubridate::quarter(time)),
+    periodo = paste0(year, "-", trimestre)) 
+
+# Resultado: "2022-1", "2022-2", etc.
+  
+# passar um mutate para criar a sif de análise...
+```
+
+# Criando coluna de semestre
+```{r}
+data_set_sif <- data_set_sif %>%
+  mutate(
+    epoca = case_when(
+      month %in% 1:6   ~ "Jan_Jun",
+      month %in% 7:12  ~ "Jul_Dez"
+    ),
+    daily_sif757 = daily_sif757  # adiciona a coluna da variável
+  )
+
+
+glimpse(data_set_sif)
+
+
+```
+
+
+#####
+AGORA COMEÇA O SEMIVARIOGRAMA E A KRIGAGEM DOS GURI
+ 
+ 
+## Criando e filtrando o grid da área de estudo
+```{r}
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <- -1.6058
+dist_grid <- 0.20
+grid_quadrante <- expand.grid(
+  longitude = seq(min_lon, max_lon, dist_grid),
+  latitude = seq(min_lat, max_lat, dist_grid)
+)
+
+grid_quadrante |> 
+  ggplot(aes(x = longitude, y = latitude)) +
+   geom_point(size = 0.1, color = "blue") +
+   labs(title = "Grid de Pontos para a Area de Estudo") +
+   theme_minimal() +
+   coord_equal()
+readr::write_rds(grid_quadrante, "../data/grid_quadrante.rds")
+glimpse(grid_quadrante)
+sp::coordinates(grid_quadrante) = ~ longitude + latitude
+```
+
+## PASSO 1)
+
+```{r}
+meu_ano = 2024
+meu_trimestre = "T2"
+nr <- data_set_sif |>
+ filter(year == meu_ano,
+        trimestre == meu_trimestre) |>
+ nrow()
+
+df_aux_geo <- data_set_sif |>
+ filter(year == meu_ano,
+        trimestre == meu_trimestre) |>
+ sample_n(.98*nr) |> # <--- aqui voc pode maximizar em relação ao teu tempo de processamento
+ select(longitude, latitude, daily_sif757) # <-- Colocar a sif criada anteriormente
+
+cat("Número de observações:", nrow(df_aux_geo), "\n")
+
+sp::coordinates(df_aux_geo) = ~ longitude + latitude
+plot(df_aux_geo@coords)
+```
+
+## PASSO 2 - Construção do Semivariograma Experimental
+
+```{r}
+form <- daily_sif757 ~ 1 # <-- Colocar a sif criada anteriormente
+vari_exp <- gstat::variogram(form, data = df_aux_geo,
+                     cressie = FALSE,
+                     cutoff = 3, # distância máxima 8
+                     width = 0.2) # distancia entre pontos
+vari_exp  |>
+ggplot(aes(x=dist, y=gamma)) +
+ geom_point() +
+ labs(x="lag (graus)",
+      y=expression(paste(gamma,"(h)")))
+```
+## PASSO 3) Ajuste dos modelos matemáticos teóricos ao semivariograma experimental
+
+```{r}
+patamar=0.03625
+alcance=2.88
+epepita=0.0264
+modelo_1 <- fit.variogram(vari_exp,vgm(patamar,"Sph",alcance,epepita))
+modelo_2 <- fit.variogram(vari_exp,vgm(patamar,"Exp",alcance,epepita))
+modelo_3 <- fit.variogram(vari_exp,vgm(patamar,"Gau",alcance,epepita))
+plot_my_models(modelo_1,modelo_2,modelo_3)
+```
+## PASSO 4) Escolha do melhor modelo
+
+O melhor modelo é aquele que apresenta um coeficiente de regressão o mais próximo de 01 e o interesepto o mais próximo de 0.
+
+```{r}
+conjunto_validacao <- df_aux_geo |>
+ as_tibble() |>
+ sample_n(300)
+sp::coordinates(conjunto_validacao) = ~longitude + latitude
+modelos<-list(modelo_1,modelo_2,modelo_3)
+for(j in 1:3){
+ est<-0
+ for(i in 1:nrow(conjunto_validacao)){
+   valid <- gstat::krige(formula=form, conjunto_validacao[-i,], conjunto_validacao, model=modelos[[j]])
+   est[i]<-valid$var1.pred[i]
+ }
+ obs<-as.data.frame(conjunto_validacao)[,3]
+ RMSE<-round((sum((obs-est)^2)/length(obs))^.5,3)
+ mod<-lm(obs~est)
+ b<-round(mod$coefficients[2],3)
+ se<-round(summary(mod)$coefficients[4],3)
+r2<-round(summary(mod)$r.squared,3)
+ a<-round(mod$coefficients[1],3)
+ plot(est,obs,xlab="Estimado", ylab="Observado",pch=j,col="blue",
+      main=paste("Modelo = ",modelos[[j]][2,1],"; Coef. Reg. = ", b, " (SE = ",se, ", r2 = ", r2,")\ny intersept = ",a,"RMSE = ",RMSE ))
+ abline(lm(obs~est));
+ abline(0,1,lty=3)
+}
+```
+## PASSO 5) Definido o melhor modelo, precisamos guardar os valores.
+
+```{r}
+modelo <- modelo_1 ## sempre modificar
+# Salvando os parâmetros dos melhores modelo
+model <- modelo |> slice(2) |> pull(model)
+rss <- round(attr(modelo, "SSErr"),4)
+c0 <- round(modelo$psill[[1]],4)
+c0_c1 <- round(sum(modelo$psill),4)
+a <- ifelse(model == "Gau", round(modelo$range[[2]]*(3^.5),2),
+           ifelse(model == "Exp",round(3*modelo$range[[2]],2),
+           round(modelo$range[[2]],2)))
+
+
+r2 <- vari_exp |> add_column( model = model, a=a, c0 = c0,
+                                c0_c1 = c0_c1) |>
+mutate(
+     gamma_m = ifelse(model == "Sph",
+       ifelse(dist <= a, c0 + (c0_c1 - c0) * (3/2 * (dist/a) - 1/2 * (dist/a)^3),c0_c1), ifelse(model == "Exp", c0 + (c0_c1-c0)*(1-exp(-3*(dist/a))),c0 + (c0_c1-c0)*(1-exp(-(dist/a)^2)))),
+     residuo_total = (gamma-mean(gamma))^2,
+     residuo_mod = (gamma - gamma_m)^2
+   ) |>
+   summarise(
+     r2=(sum(residuo_total) - sum(residuo_mod))/sum(residuo_total)
+   ) |> pull(r2)
+
+tibble(
+meu_ano, meu_trimestre, model, c0, c0_c1, a, rss, r2
+) |> mutate(gde = c0/c0_c1, .after = "a") |>
+ write_csv(paste0("../output/best-fit-sif/",meu_ano,"-",meu_trimestre,".csv"))
+
+ls_csv <- list.files("../output/best-fit-sif/",full.names = TRUE,pattern = ".csv")
+map_df(ls_csv, read_csv) |>
+ writexl::write_xlsx("../output/semivariogram-models-sif.xlsx")
+png(filename = paste0("../output/semivar-sif-",meu_ano,"-",meu_trimestre,".png"),
+   width = 800, height = 600)
+plot(vari_exp,model=modelo,cex.lab=2, col=1,pl=F,pch=16,cex=2.2,ylab=list("Semivariancia",cex=2.3),xlab=list("Distancia de Separacao h (m)",cex=2.3,cex.axis=4))
+dev.off()
+```
+
+## Passo 6 - Krigagem Ordinária - interpolação em locais não amostrados
+
+
+```{r}
+ko_variavel <- krige(formula=form, df_aux_geo, grid_quadrante, model=modelo,
+                   block=c(0.1,0.1),
+                  nsim=0,
+                 na.action=na.pass,
+                debug.level=-1
+)
+```
+
+Passo 7 - Visualização dos padrões espaciais e armazenamento dos dados e imagem.
+
+```{r}
+mapa <- as_tibble(ko_variavel) |>
+ggplot(aes(x=longitude, y=latitude)) +
+ geom_tile(aes(fill = var1.pred)) +
+ scale_fill_viridis_c() +
+ coord_equal() +
+ labs(x="Longitude",
+      y="Latitude",
+      fill="sif") +
+theme_bw()
+mapa
+ggsave(paste0("../output/mapas/kgr-sif-",meu_ano,"-",meu_trimestre,".png"),
+     plot = mapa, width = 10, height = 8, dpi = 300)
+df <- ko_variavel |>
+ as_tibble()
+write_rds(df,paste0("../output/mapas/kgr-sif-",meu_ano,"-",meu_trimestre,".rds"))
+```
+##################
+
+```{r}
+# # PASSO 1: listar só SIF (como você já fez)
+# list_rds <- list.files(
+#   "../output/mapas/",
+#   pattern = "^kgr-sif-(2020|2021|2022|2023|2024)-(T1|T2|T3|T4)\\.rds$",
+#   full.names = TRUE
+# )
+# 
+# # Substitua pelo nome do seu arquivo
+# readRDS("../output/mapas/kgr-sif-2024-T4.rds") |> 
+#   glimpse()
+# 
+# # 2) Ler e extrair ano/época do nome
+# rds_reader <- function(path){
+#   
+#   # 1. Extração via Regex (Sua lógica)
+#   nome <- basename(path)
+#   m <- stringr::str_match(nome, "^kgr-sif-(\\d{4})-(T1|T2|T3|T4)\\.rds$")
+#   
+#   # m[,2] é o primeiro grupo (ex: "2020")
+#   # m[,3] é o segundo grupo (ex: "T1anomal")
+#   ano_extraido <- m[,2]       
+#   trimestre_raw <- m[,3] 
+#   
+#   # 2. Leitura e Tratamento
+#   readr::read_rds(path) |> 
+#     dplyr::mutate(
+#       year = as.numeric(ano_extraido), # Garante que o ano seja número
+#       
+#       # Aqui transformamos "T1anomal" em apenas o número 1, 2, 3 ou 4
+#       trimestre_n = dplyr::case_when(
+#         trimestre_raw == "T1" ~ 1L,
+#         trimestre_raw == "T2" ~ 2L,
+#         trimestre_raw == "T3" ~ 3L,
+#         trimestre_raw == "T4" ~ 4L
+#       ),
+#       
+#       # Cria os labels bonitos
+#       trimestre_label = paste0("T", trimestre_n),         # "T1"
+#       year_trimestre_label = paste0(year, " / ", trimestre_label) # "2020 / T1"
+#     ) |> 
+#     dplyr::rename(
+#       daily_sif757 = var1.pred
+#     ) |> 
+#     dplyr::select(latitude, longitude, daily_sif757, year, trimestre_n, trimestre_label, year_trimestre_label)
+# }
+# 
+# kgr_maps_sif <- purrr::map_dfr(list_rds, rds_reader)
+# 
+# 
+# 
+# # PASSO 3: Aplicar a função e criar a tabela final
+# kgr_maps_sif <- map_df(list_rds, rds_reader)
+
+# NÃO POSSO CALCULAR ANOMALIA AQUI DNV
+# PASSO 4: (NOVO) Calcular a anomalia para cada grupo
+#kgr_maps <- kgr_maps |>
+#  group_by(year_epoca_label) |>
+#  mutate(xco2_anomaly = xco2 - median(xco2, na.rm = TRUE),
+#         .after = xco2)
+
+# PASSO 5: Gerar o gráfico
+data_set_sif |>
+  ggplot(aes(x = periodo, y = daily_sif757)) +
+  geom_boxplot(fill = "orange") +
+  labs(
+    title = "Distribuição de sif por Ano e Época",
+    x = "Ano e Época",
+    y = "sif"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  coord_cartesian(ylim = c(0, 2))
+```
+
+
+
+
+##################
+
+## KRIGAGEM DOS GURI DEU CERTO!!!!!!!
+## Compilar mapas gerados
+```{r}
+# PASSO 1: listar só SIF (como você já fez)
+list_rds <- list.files(
+  "../output/mapas/",
+  pattern = "^kgr-sif-(2020|2021|2022|2023|2024)-(T1|T2|T3|T4)\\.rds$",
+  full.names = TRUE
+)
+
+# Substitua pelo nome do seu arquivo
+readRDS("../output/mapas/kgr-sif-2024-T4.rds") |> 
+  glimpse()
+
+# 2) Ler e extrair ano/época do nome
+rds_reader <- function(path){
+  
+  # 1. Extração via Regex (Sua lógica)
+  nome <- basename(path)
+  m <- stringr::str_match(nome, "^kgr-sif-(\\d{4})-(T1|T2|T3|T4)\\.rds$")
+  
+  # m[,2] é o primeiro grupo (ex: "2020")
+  # m[,3] é o segundo grupo (ex: "T1anomal")
+  ano_extraido <- m[,2]       
+  trimestre_raw <- m[,3] 
+  
+  # 2. Leitura e Tratamento
+  readr::read_rds(path) |> 
+    dplyr::mutate(
+      year = as.numeric(ano_extraido), # Garante que o ano seja número
+      
+      # Aqui transformamos "T1anomal" em apenas o número 1, 2, 3 ou 4
+      trimestre_n = dplyr::case_when(
+        trimestre_raw == "T1" ~ 1L,
+        trimestre_raw == "T2" ~ 2L,
+        trimestre_raw == "T3" ~ 3L,
+        trimestre_raw == "T4" ~ 4L
+      ),
+      
+      # Cria os labels bonitos
+      trimestre_label = paste0("T", trimestre_n),         # "T1"
+      year_trimestre_label = paste0(year, " / ", trimestre_label) # "2020 / T1"
+    ) |> 
+    dplyr::rename(
+      daily_sif757 = var1.pred
+    ) |> 
+    dplyr::select(latitude, longitude, daily_sif757, year, trimestre_n, trimestre_label, year_trimestre_label)
+}
+
+kgr_maps_sif <- purrr::map_dfr(list_rds, rds_reader)
+
+
+
+# PASSO 3: Aplicar a função e criar a tabela final
+kgr_maps_sif <- map_df(list_rds, rds_reader)
+
+# NÃO POSSO CALCULAR ANOMALIA AQUI DNV
+# PASSO 4: (NOVO) Calcular a anomalia para cada grupo
+#kgr_maps <- kgr_maps |>
+#  group_by(year_epoca_label) |>
+#  mutate(xco2_anomaly = xco2 - median(xco2, na.rm = TRUE),
+#         .after = xco2)
+
+# PASSO 5: Gerar o gráfico
+kgr_maps_sif |>
+  ggplot(aes(x = year_trimestre_label, y = daily_sif757)) +
+  geom_boxplot(fill = "orange") +
+  labs(
+    title = "Distribuição de sif por Ano e Época",
+    x = "Ano e Época",
+    y = "sif"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Anomalia compilada de todas épocas
+```{r}
+kgr_maps_sif |> 
+  group_by(year_trimestre_label) |> 
+  ggplot(aes(year_trimestre_label,daily_sif757)) +
+  geom_boxplot(fill="orange")+
+  theme_bw()
+```
+
+```{r}
+dados_sif <- kgr_maps_sif
+
+# Pegue a primeira longitude do XCO2
+head(dados_sif$longitude, 3)
+
+# Pegue a primeira longitude da Base Territorial
+head(base_territorial$longitude, 3)
+
+
+```
+```{r}
+base_territorial <- readr::read_rds("../data/BASE_FINAL_MAPPING_COMPLETO.rds")
+dados_sif <- kgr_maps_sif
+
+# --- 1. TRANSFORMAR EM PONTOS (SF) ---
+# XCO2 (seus dados de carbono)
+sif_sf <- dados_sif |> 
+  filter(!is.na(longitude), !is.na(latitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+# Base Territorial (seu mapa completo)
+base_sf <- base_territorial |> 
+  filter(!is.na(longitude), !is.na(latitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+
+# --- 2. O JOIN ESPACIAL (A SOLUÇÃO MÁGICA) ---
+# st_nearest_feature: Pega o vizinho mais próximo, ignorando o desalinhamento de 0.1
+message(">> Realizando Join Espacial (pode demorar uns segundos)...")
+dados_join_sif_sf <- st_join(sif_sf, base_sf, join = st_nearest_feature)
+
+
+# --- 3. LIMPAR E VOLTAR PRA TABELA ---
+dados_analise_sif <- dados_join_sif_sf |> 
+  st_drop_geometry() |> 
+  as_tibble() |> 
+  # Renomeia para manter a longitude original do XCO2 como referência
+  rename(longitude = longitude.x, latitude = latitude.x) |> 
+  select(-ends_with(".y"))
+
+
+glimpse(dados_analise_sif)
+```
+
+```{r}
+# --- 3. ANÁLISE ESTATÍSTICA DESCRITIVA ---
+# Vamos ver a média de XCO2 por categoria
+resumo_estatistico_sif <- dados_analise_sif |> 
+  group_by(categoria_mapa) |> 
+  summarise(
+    Media_sif = mean(daily_sif757 , na.rm = TRUE),
+    Mediana_sif = median(daily_sif757 , na.rm = TRUE),
+    Desvio_Padrao = sd(daily_sif757 , na.rm = TRUE),
+    N_Pixels = n()
+  ) |> 
+  arrange(desc(Media_sif))
+
+print(resumo_estatistico_sif)
+
+
+# --- 4. O GRÁFICO DA VERDADE (BOXPLOT) ---
+# Vamos usar as mesmas cores do mapa para facilitar a leitura mental
+
+cores_mapa <- c(
+  "Terra Indígena"             = "#FF8C00",
+  "Unidade de Conservação"     = "#40E0D0",
+  "Pastagem"                   = "#F4A460",
+  "Soja"                       = "#C71585",
+  "Outras áreas não vegetadas" = "#BEBEBE",
+  "Floresta"                   = "#228B22",
+  "Outros Usos"                = "#556B2F"
+)
+
+ggplot(dados_analise_sif, aes(x = reorder(categoria_mapa, daily_sif757, FUN = median), 
+                          y = daily_sif757, 
+                          fill = categoria_mapa)) +
+  
+  # Boxplot mostra a distribuição (mediana, quartis e outliers)
+  geom_boxplot(alpha = 0.8, outlier.size = 0.5, outlier.alpha = 0.3) +
+  
+  scale_fill_manual(values = cores_mapa) +
+  theme_bw() +
+  
+  labs(
+    title = "Boxplot do Uso do Solo e sif",
+    y = "sif",
+    fill = "Categoria"
+  ) +
+  
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), # Gira o texto do eixo X
+    legend.position = "none" # Remove legenda pq o eixo X já explica
+  )
+
+# ggsave("boxplot_xco2_uso_solo.png", width = 8, height = 6, dpi = 300)
+```
+
+```{r}
+# --- 1. DEFINIR AS CORES (Pra manter o padrão do mapa) ---
+cores_mapa <- c(
+  "Terra Indígena"             = "#FF8C00",
+  "Unidade de Conservação"     = "#40E0D0",
+  "Pastagem"                   = "#F4A460",
+  "Soja"                       = "#C71585",
+  "Floresta"                   = "#228B22",
+  "Outros Usos"                = "#556B2F",
+  "Outras áreas não vegetadas" = "#BEBEBE"
+)
+
+# --- 2. CRIAR A FUNÇÃO DE PLOTAGEM ---
+# Essa função recebe o nome da categoria e faz todo o trabalho sujo
+plotar_uso_individual <- function(nome_categoria) {
+  
+  # 1. Filtra só a categoria que você pediu
+  dados_filtrados_sif <- dados_analise_sif |> 
+    filter(categoria_mapa == nome_categoria)
+  
+  # Check de segurança: Se não tiver dados, avisa e para
+  if(nrow(dados_filtrados_sif) == 0) {
+    message(paste("⚠️ Atenção: Não há dados para a categoria:", nome_categoria))
+    return(NULL)
+  }
+  
+  # 2. Pega a cor certa da paleta
+  cor_atual <- cores_mapa[nome_categoria]
+  
+  # 3. Gera o Gráfico
+  p <- ggplot(dados_filtrados_sif, aes(x = year_trimestre_label, y = daily_sif757)) +
+    
+    geom_boxplot(fill = cor_atual, alpha = 0.8, outlier.size = 0.5) +
+    
+    # Adiciona uma linha de tendência suave (opcional, mas fica chique)
+    # geom_smooth(method = "loess", se = FALSE, aes(group=1), color = "black", size=0.5, linetype="dashed") +
+    coord_cartesian(ylim = c(0.1, 0.6)) +
+    theme_bw() +
+    
+    labs(
+      title = paste("sif:", nome_categoria),
+      x = "Ano / Trimestre",
+      y = "sif"
+    ) +
+    
+    theme(
+      axis.text.x = element_text(angle = 90, vjust = 0.5), # Texto em pé pra ler as datas
+      plot.title = element_text(face = "bold", size = 14, color = cor_atual) # Título na cor da categoria
+    )
+  
+  return(p)
+}
+
+# --- 3. AGORA É SÓ CHAMAR UM POR UM! ---
+
+# Primeiro: TERRA INDÍGENA
+p1 <- plotar_uso_individual("Terra Indígena")
+print(p1)
+# ggsave("boxplot_indigena.png", p1, width = 8, height = 5)
+
+# Segundo: PASTAGEM
+p2 <- plotar_uso_individual("Pastagem")
+print(p2)
+# ggsave("boxplot_pastagem.png", p2, width = 8, height = 5)
+
+# Terceiro: SOJA (Se houver)
+p3 <- plotar_uso_individual("Soja")
+print(p3)
+
+# Quarto: FLORESTA
+p4 <- plotar_uso_individual("Floresta")
+print(p4)
+
+# Quinto: UNIDADE DE CONSERVAÇÃO
+p5 <- plotar_uso_individual("Unidade de Conservação")
+print(p5)
+
+
+```
+```{r}
+library(ggplot2)
+library(dplyr)
+
+# --- 1. PREPARAÇÃO ---
+dados_plotagem <- dados_analise_sif |>
+  filter(categoria_mapa %in% names(cores_mapa)) 
+
+# --- 2. PLOTAGEM TURBINADA ---
+p_final <- ggplot(dados_plotagem, aes(x = year_trimestre_label, y = daily_sif757, fill = categoria_mapa)) +
+  
+  # AJUSTE 1: Boxplots "Gordos" e Visíveis
+  geom_boxplot(
+    alpha = 0.8, 
+    outlier.size = 1.2, # Aumentei de 0.4 para 1.2 (pra ver o ponto)
+    size = 0.5,         # Aumentei de 0.2 para 0.5 (linha mais grossa)
+    width = 0.8         # Deixa a caixa ocupar mais espaço lateral
+  ) +
+  
+  # Mantendo sua lógica de coluna única
+  facet_wrap(~ categoria_mapa, ncol = 1) + 
+  
+  scale_fill_manual(values = cores_mapa) +
+  
+  coord_cartesian(ylim = c(0.1, 0.6)) +
+  
+  labs(
+    title = "Dinâmica do SIF por Uso e Cobertura do Solo",
+    x = "Ano / Trimestre", # Voltei o label X se quiser
+    y = "SIF 757"
+  ) +
+  
+  # AJUSTE 2: Fonte base maior
+  theme_bw(base_size = 14) + 
+  
+  theme(
+    # AJUSTE 3: Textos dos eixos legíveis
+    # Mudei size de 6 para 10. Com size=6 ninguém lê no pôster.
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 10),
+    
+    legend.position = "none",
+    
+    strip.background = element_rect(fill = "gray95"),
+    # Mudei size de 6 para 12 (Títulos das categorias grandes)
+    strip.text = element_text(face = "bold", size = 12)
+  )
+
+# --- 3. SALVAR GIGANTE (O Segredo) ---
+# Salva um arquivo bem alto (height = 20) para "esticar" as caixas
+# ggsave("SIF_Gigante.png", plot = p_final, width = 10, height = 15, dpi = 300, limitsize = FALSE)
+# 
+# message("Gráfico salvo! Abra o arquivo SIF_Boxplot_Gigante.png para ver o resultado.")
+
+```
+
+
+```{r}
+# --- 1. CRIAR OS SUPER GRUPOS ---
+dados_comparativos_sif <- dados_analise_sif |> 
+  mutate(
+    Super_Grupo = case_when(
+      # Time da Floresta
+      categoria_mapa %in% c("Terra Indígena", "Unidade de Conservação", "Floresta") ~ "Áreas Florestais/Protegidas",
+      
+      # Time do Agro
+      categoria_mapa %in% c("Soja", "Pastagem") ~ "Áreas Agrícolas (Soja/Pasto)",
+      
+      # O resto vira NA
+      TRUE ~ NA_character_
+    )
+  ) |> 
+  # Removemos o que não entrou nos grupos (água, urbano, etc.)
+  filter(!is.na(Super_Grupo))
+
+# --- 2. DEFINIR CORES SEMÂNTICAS ---
+cores_duelo <- c(
+  "Áreas Florestais/Protegidas"  = "#228B22", # Verde Floresta
+  "Áreas Agrícolas (Soja/Pasto)" = "#B22222"  # Vermelho Fogo
+)
+
+# --- 3. O GRÁFICO DO DUELO ---
+ggplot(dados_comparativos_sif, aes(x = year_trimestre_label, y = daily_sif757, fill = Super_Grupo)) +
+  
+  # Boxplot agrupado
+  geom_boxplot(alpha = 0.8, outlier.size = 0.3, position = position_dodge(width = 0.8)) +
+  
+  # Linha Zero de referência
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  
+  # Travar escala como você pediu (-5 a 5)
+  coord_cartesian(ylim = c(0.1, 0.6)) +
+  
+  # Cores
+  scale_fill_manual(values = cores_duelo) +
+  
+  theme_bw() +
+  
+  labs(
+    title = "sif: Floresta vs. Agricultura",
+    x = "Ano / Trimestre",
+    y = "sif",
+    fill = "Grupo"
+  ) +
+  
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5), # Texto em pé
+    legend.position = "top", # Legenda em cima pra destacar os times
+    legend.title = element_text(face = "bold"),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+
+# ggsave("boxplot_duelo_floresta_vs_agro.png", width = 12, height = 6, dpi = 300)
+```
+```{r}
+# Vamos agregar por Ano e Trimestre separado para montar a matriz
+dados_matriz_sif <- dados_comparativos_sif |> 
+  # Extrair ano e trimestre do label se não tiver as colunas separadas
+  # (Assumindo que você tem colunas 'year' e 'trimestre_label' no dataframe original)
+  group_by(year, trimestre_label, Super_Grupo) |> 
+  summarise(Media = mean(daily_sif757, na.rm = TRUE), .groups = "drop")
+
+ggplot(dados_matriz_sif, aes(x = trimestre_label, y = factor(year), fill = Media)) +
+  
+  # Os quadradinhos
+  geom_tile(color = "white") +
+  
+  # Separa um bloco para Floresta e outro para Agro
+  facet_wrap(~Super_Grupo) +
+  
+  # Escala de cor divergente (Azul = Baixo, Branco = Zero, Vermelho = Alto)
+  scale_fill_gradient2(low = "red", mid = "white", high = "green", midpoint = 0.31) +
+  
+  theme_minimal() +
+  labs(
+    title = "Matriz de Intensidade de Carbono",
+    x = "Trimestre",
+    y = "Ano",
+    fill = "Anomalia Média"
+  )
+```
+
+```{r}
+library(sf)
+library(dplyr)
+
+# --- 1. PREPARAÇÃO DOS DADOS (SF) ---
+base_sf <- base_territorial |> 
+  filter(!is.na(longitude), !is.na(latitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE) |>
+  # Renomeia coordenadas da base para serem nossa CHAVE ÚNICA DE LIGAÇÃO
+  rename(lat_base = latitude, lon_base = longitude)
+
+sif_sf <- dados_sif |> 
+  filter(!is.na(longitude), !is.na(latitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+xco2_sf <- dados_xco2 |> 
+  filter(!is.na(longitude), !is.na(latitude)) |> 
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326, remove = FALSE)
+
+
+# --- 2. JOIN ESPACIAL (MANTENDO LEVE) ---
+# Mantemos apenas o essencial aqui para o R não travar processando texto repetido
+
+message(">> 1/2 Alinhando SIF com a Base Territorial...")
+sif_alinhado <- st_join(sif_sf, base_sf, join = st_nearest_feature) |>
+  st_drop_geometry() |>
+  as_tibble() |>
+  select(year_trimestre_label, lat_base, lon_base, daily_sif757) 
+
+message(">> 2/2 Alinhando XCO2 com a Base Territorial...")
+xco2_alinhado <- st_join(xco2_sf, base_sf, join = st_nearest_feature) |>
+  st_drop_geometry() |>
+  as_tibble() |>
+  select(year_trimestre_label, lat_base, lon_base, xco2_anomalia) 
+
+
+# --- 2.5. AGREGAR PELA MÉDIA (NUMÉRICO) ---
+
+sif_unico <- sif_alinhado |>
+  group_by(lat_base, lon_base, year_trimestre_label) |>
+  summarise(daily_sif757 = mean(daily_sif757, na.rm = TRUE), .groups = "drop")
+
+xco2_unico <- xco2_alinhado |>
+  group_by(lat_base, lon_base, year_trimestre_label) |>
+  summarise(xco2_anomalia = mean(xco2_anomalia, na.rm = TRUE), .groups = "drop")
+
+
+# --- 3. A GRANDE UNIÃO NUMÉRICA ---
+message(">> Unindo SIF e XCO2...")
+
+dados_analise_nums <- inner_join(
+  sif_unico,
+  xco2_unico,
+  by = c("lat_base", "lon_base", "year_trimestre_label")
+)
+
+
+# --- 4. O RESGATE DOS DADOS (ENRIQUECIMENTO) --- [AQUI ESTÁ A SOLUÇÃO]
+# Agora pegamos as categorias da 'base_sf' original e colamos de volta
+
+# 4.1 Criar um "Dicionário de Pixels" (sem geometria para ser rápido)
+metadados_base <- base_sf |>
+  st_drop_geometry() |>
+  as_tibble() |>
+  select(
+    lat_base, lon_base,  # As chaves para conectar
+    uso_solo_code, uso_solo_nome, classe_uso, 
+    flag_indigena, flag_conservacao, categoria_mapa
+  ) |>
+  distinct(lat_base, lon_base, .keep_all = TRUE) # Garante que cada pixel é único
+
+# 4.2 Colar os metadados na tabela de análise
+message(">> Reintegrando dados de Uso do Solo e Categorias...")
+
+dados_analise_total <- left_join(
+  dados_analise_nums,
+  metadados_base,
+  by = c("lat_base", "lon_base")
+)
+
+message("✅ Pronto! Linhas finais: ", nrow(dados_analise_total))
+glimpse(dados_analise_total)
+```
+
+
+
+```{r}
+# --- SÉRIE TEMPORAL (Z-SCORE) ---
+
+# 1. Preparar média da Amazônia inteira por data
+serie_temporal <- dados_analise_total |>
+  group_by(year_trimestre_label) |>
+  summarise(
+    sif_mean = mean(daily_sif757, na.rm = TRUE),
+    xco2_mean = mean(xco2_anomalia, na.rm = TRUE)
+  ) |>
+  # 2. Padronizar (Scale) para plotar junto
+  mutate(
+    sif_z = scale(sif_mean),
+    xco2_z = scale(xco2_mean)
+  )
+
+# 3. Plotar as linhas juntas
+ggplot(serie_temporal, aes(x = year_trimestre_label)) +
+  # Linha SIF (Verde)
+  geom_line(aes(y = sif_z, group = 1, color = "SIF"), size = 1.2) +
+  geom_point(aes(y = sif_z, color = "SIF "), size = 3) +
+  
+  # Linha XCO2 (Vermelho/Cinza)
+  geom_line(aes(y = xco2_z, group = 1, color = "XCO2 Anomalia"), size = 1.2, linetype = "dashed") +
+  geom_point(aes(y = xco2_z, color = "XCO2 Anomalia"), size = 3) +
+  
+  scale_color_manual(values = c("SIF" = "darkblue", "XCO2 Anomalia" = "darkorange3")) +
+  
+  labs(
+    title = "Série Temporal: SIF vs Anomalia",
+    y = "Z-Score",
+    x = "Trimestre",
+    color = "Variável"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+library(dplyr)
+library(ggplot2)
+# install.packages("patchwork") # Se ainda não tiver, para juntar os plots no final
+library(patchwork) 
+
+# --- 1. PREPARAÇÃO DOS DADOS (Cálculo do Z-Score por Categoria) ---
+serie_temporal_uso <- dados_analise_total |>
+  filter(!is.na(categoria_mapa)) |>
+  # Agrupa para tirar a média de cada trimestre em cada uso
+  group_by(categoria_mapa, year_trimestre_label) |>
+  summarise(
+    sif_mean = mean(daily_sif757, na.rm = TRUE),
+    xco2_mean = mean(xco2_anomalia, na.rm = TRUE),
+    .groups = "drop_last" 
+  ) |>
+  # O PULO DO GATO: O scale roda dentro do grupo da categoria
+  mutate(
+    sif_z = as.numeric(scale(sif_mean)),
+    xco2_z = as.numeric(scale(xco2_mean))
+  ) |>
+  ungroup()
+
+# --- 2. CRIAR A FUNÇÃO DE PLOTAGEM (Estilo Série Temporal) ---
+plotar_zscore_individual <- function(nome_categoria) {
+  
+  # 1. Filtra a categoria já processada
+  dados_plot <- serie_temporal_uso |> 
+    filter(categoria_mapa == nome_categoria)
+  
+  if(nrow(dados_plot) == 0) return(NULL)
+  
+  # 2. Pega a cor da categoria para usar no Título (Estilo visual)
+  cor_titulo <- cores_mapa[nome_categoria]
+  
+  # 3. Plotagem das Linhas Cruzadas
+  p <- ggplot(dados_plot, aes(x = year_trimestre_label)) +
+    
+    # Linha SIF (Verde Escuro - Fotossíntese)
+    geom_line(aes(y = sif_z, group = 1, color = "SIF"), size = 1.2) +
+    geom_point(aes(y = sif_z, color = "SIF"), size = 3) +
+    
+    # Linha XCO2 (Vermelho/Laranja - Carbono)
+    geom_line(aes(y = xco2_z, group = 1, color = "XCO2"), size = 1.2, linetype = "dashed") +
+    geom_point(aes(y = xco2_z, color = "XCO2"), size = 3) +
+    
+    # Cores fixas para as variáveis (para facilitar leitura)
+    scale_color_manual(values = c("SIF" = "forestgreen", "XCO2" = "firebrick")) +
+    
+    # Linha zero de referência
+    geom_hline(yintercept = 0, color = "gray80", size = 0.5) +
+    
+    labs(
+      title = paste(nome_categoria), # Nome curto para caber no painel
+      subtitle = "Sincronia (Z-Score)",
+      y = "Desvio Padrão (Z)",
+      x = NULL,
+      color = NULL
+    ) +
+    
+    theme_bw() +
+    
+    theme(
+      # Título na cor da categoria (Igual ao seu boxplot)
+      plot.title = element_text(face = "bold", size = 14, color = cor_titulo),
+      axis.text.x = element_text(angle = 90, vjust = 0.5, size = 8),
+      legend.position = "bottom" # Legenda embaixo para não comer espaço lateral
+    )
+  
+  return(p)
+}
+
+# --- 3. CHAMAR UM POR UM (Igual você fez) ---
+
+# 1. Terra Indígena
+z1 <- plotar_zscore_individual("Terra Indígena")
+print(z1)
+
+# 2. Pastagem
+z2 <- plotar_zscore_individual("Pastagem")
+print(z2)
+
+# 3. Soja
+z3 <- plotar_zscore_individual("Soja")
+print(z3)
+
+# 4. Floresta
+z4 <- plotar_zscore_individual("Floresta")
+print(z4)
+
+# 5. Unidade de Conservação
+z5 <- plotar_zscore_individual("Unidade de Conservação")
+print(z5)
+
+
+# --- 4. BÔNUS: MONTAR O PAINEL GIGANTE (Patchwork) ---
+# Aqui a gente junta tudo num layout top para salvar
+
+layout_final <- (z1 + z5) / (z4 + z2) / z3 + 
+  plot_layout(guides = "collect") & # "collect" junta as legendas numa só lá embaixo
+  theme(legend.position = "bottom")
+
+# Salvar Gigante
+ggsave("Serie_Temporal_ZScore_UsoSolo.png", plot = layout_final, width = 12, height = 18, dpi = 300)
+```
+
+
+
+```{r}
+data_set_clima <- "../data/dados_nasapower_completo.rds"
+readRDS(data_set_clima)
+```
+
+```{r}
+library(dplyr)
+library(sf)
+library(lubridate)
+library(stringr)
+
+# ==============================================================================
+# PASSO 1: COMPACTAR NASA POWER (Diário -> Trimestral)
+# ==============================================================================
+message(">> 1. Compactando dados da NASA...")
+
+nasa_trimestral <- nasa_raw |>
+  mutate(
+    date = as.Date(yyyymmdd), 
+    year = year(date),
+    quarter = quarter(date),
+    # Cria label limpo "2022/T1" (Sem espaços!)
+    year_trimestre_label = paste0(year, "/T", quarter)
+  ) |>
+  group_by(lon, lat, year_trimestre_label) |>
+  summarise(
+    precip_acumulado = sum(prectotcorr, na.rm = TRUE),      # Soma chuva
+    rad_media        = mean(allsky_sfc_sw_dwn, na.rm = TRUE), # Média Sol
+    temp_media       = mean(t2m, na.rm = TRUE),             # Média Temp
+    .groups = "drop"
+  )
+
+# ==============================================================================
+# PASSO 2: MAPEAR VIZINHOS (Apenas Espacial - Sem Tempo)
+# ==============================================================================
+# Descobre qual pixel da NASA atende qual pixel da sua Base
+message(">> 2. Criando mapa de ligação espacial (Grid x Grid)...")
+
+# Grid NASA (Pontos Únicos)
+nasa_grid_unico <- nasa_trimestral |>
+  distinct(lon, lat) |> 
+  st_as_sf(coords = c("lon", "lat"), crs = 4326, remove = FALSE) |>
+  rename(lon_nasa = lon, lat_nasa = lat)
+
+# Grid BASE (Pontos Únicos)
+base_grid_unico <- base_territorial |>
+  filter(!is.na(longitude), !is.na(latitude)) |>
+  distinct(longitude, latitude) |>
+  mutate(lat_base = latitude, lon_base = longitude) |>
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+# Join Espacial (Nearest Feature)
+# AQUI ESTAVA O SEGREDO: Cruzamos apenas coordenadas, ignorando datas
+mapa_pixels <- st_join(base_grid_unico, nasa_grid_unico, join = st_nearest_feature) |>
+  st_drop_geometry() |>
+  as_tibble() |>
+  select(lat_base, lon_base, lat_nasa, lon_nasa)
+
+# ==============================================================================
+# PASSO 3: EXPANDIR DADOS (Tabela) E UNIR TUDO
+# ==============================================================================
+message(">> 3. Trazendo a série temporal e unindo com SIF/XCO2...")
+
+# A. Prepara Clima (Expande o mapa espacial para todas as datas)
+clima_expandido <- mapa_pixels |>
+  inner_join(nasa_trimestral, by = c("lat_nasa" = "lat", "lon_nasa" = "lon")) |>
+  mutate(
+    # Padronização de segurança
+    lat_key = round(lat_base, 5),
+    lon_key = round(lon_base, 5),
+    year_trimestre_label = str_remove_all(year_trimestre_label, " ")
+  ) |>
+  select(lat_key, lon_key, year_trimestre_label, precip_acumulado, rad_media, temp_media)
+
+# B. Prepara sua Base Principal (Cria chaves idênticas)
+dados_analise_pronto <- dados_analise_total |>
+  mutate(
+    lat_key = round(lat_base, 5),
+    lon_key = round(lon_base, 5),
+    year_trimestre_label = str_remove_all(year_trimestre_label, " ")
+  )
+
+# C. O Join Final
+dados_completo_clima <- inner_join(
+  dados_analise_pronto,
+  clima_expandido,
+  by = c("lat_key", "lon_key", "year_trimestre_label")
+) |>
+  # Remove chaves auxiliares para limpar
+  select(-lat_key, -lon_key)
+
+message("✅ SUCESSO! Base final montada com SIF, XCO2 e CLIMA.")
+message("Total de Linhas: ", nrow(dados_completo_clima))
+glimpse(dados_completo_clima)
+```
+```{r}
+
+dados_completo_clima |>
+  ggplot(aes(x = year_trimestre_label, y = precip_acumulado)) +
+  geom_boxplot(fill = "orange") +
+  labs(
+    title = "Distribuição de precip_acumulado por Ano e Época",
+    x = "Ano e Época",
+    y = "precip_acumulado"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+dados_completo_clima |>
+  ggplot(aes(x = year_trimestre_label, y = rad_media)) +
+  geom_boxplot(fill = "orange") +
+  labs(
+    title = "Distribuição de rad_media por Ano e Época",
+    x = "Ano e Época",
+    y = "rad_media"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+dados_completo_clima |>
+  ggplot(aes(x = year_trimestre_label, y = temp_media)) +
+  geom_boxplot(fill = "orange") +
+  labs(
+    title = "Distribuição de temp_media por Ano e Época",
+    x = "Ano e Época",
+    y = "temp_media"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(tidyr) # Necessário para pivotar os dados para o heatmap
+
+# --- 1. PREPARAR MATRIZ DE CORRELAÇÃO ---
+# Selecionar apenas as colunas numéricas de interesse
+dados_correlacao <- dados_completo_mestrado |>
+  select(
+    "Anomalia XCO2" = xco2_anomalia,
+    "SIF (Fotossíntese)" = daily_sif757,
+    "Precipitação (Soma)" = precip_acumulado,
+    "Temperatura (Média)" = temp_media,
+    "Radiação (Média)" = rad_media
+  )
+
+# Calcular a matriz de correlação de Pearson
+matriz_cor <- cor(dados_correlacao, use = "complete.obs", method = "pearson")
+
+# Transformar em formato longo para o ggplot
+cor_longa <- as.data.frame(matriz_cor) |>
+  mutate(Variavel1 = rownames(matriz_cor)) |>
+  pivot_longer(cols = -Variavel1, names_to = "Variavel2", values_to = "Correlacao")
+
+# --- 2. PLOTAR O HEATMAP ---
+ggplot(cor_longa, aes(x = Variavel1, y = Variavel2, fill = Correlacao)) +
+  # Cria os quadrados
+  geom_tile(color = "white") +
+  # Adiciona os números dentro dos quadrados
+  geom_text(aes(label = round(Correlacao, 2)), color = "black", size = 4) +
+  
+  # Escala de cores (Azul = Negativo, Vermelho = Positivo)
+  scale_fill_gradient2(
+    low = "#2166ac", mid = "#f7f7f7", high = "#b2182b", 
+    midpoint = 0, limits = c(-1, 1), 
+    name = "Pearson (r)"
+  ) +
+  
+  labs(
+    title = "Matriz de Correlação Geral: Clima x Carbono x Vegetação",
+    subtitle = "Relações trimestrais em toda a área de estudo",
+    x = NULL, y = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(face = "bold"),
+    panel.grid = element_blank()
+  ) +
+  coord_fixed()
+
+
+# --- PLOT 2: Como o CLIMA afeta a ANOMALIA DE XCO2 ---
+
+dados_completo_mestrado |>
+  # 1. Selecionar as variáveis
+  select(xco2_anomalia, precip_acumulado, temp_media, rad_media) |>
+  
+  # 2. Pivotar o CLIMA para formato longo (para poder facetar)
+  pivot_longer(
+    cols = c(precip_acumulado, temp_media, rad_media),
+    names_to = "Variavel_Climatica",
+    values_to = "Valor_Climatico"
+  ) |>
+  
+  # 3. Renomear para ficar bonito no gráfico
+  mutate(Variavel_Climatica = factor(Variavel_Climatica, 
+         labels = c("Precipitação Acumulada (mm)", 
+                    "Radiação Média (W/m²)", 
+                    "Temperatura Média (°C)"))) |>
+
+  # 4. Plotar
+  ggplot(aes(x = Valor_Climatico, y = xco2_anomalia)) +
+  
+  # Pontos (usar alpha baixo pois são muitos dados)
+  geom_point(alpha = 0.1, color = "firebrick") +
+  
+  # Linha de tendência linear (lm)
+  geom_smooth(method = "lm", color = "black", size = 1) +
+  
+  # Divide o gráfico em 3 painéis (um para cada variável climática)
+  facet_wrap(~ Variavel_Climatica, scales = "free_x") +
+  
+  labs(
+    title = "Resposta da Anomalia de XCO2 ao Clima",
+    subtitle = "Relação entre variáveis climáticas e concentração de carbono",
+    y = "Anomalia de XCO2 (ppm)",
+    x = "Valor da Variável Climática"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(strip.background = element_rect(fill = "gray90", color = NA))
+
+
+
+# --- PLOT 3: Como o CLIMA afeta o SIF (Fotossíntese) ---
+
+dados_completo_mestrado |>
+  # 1. Selecionar as variáveis (Agora SIF é o foco)
+  select(daily_sif757, precip_acumulado, temp_media, rad_media) |>
+  
+  # 2. Pivotar o CLIMA
+  pivot_longer(
+    cols = c(precip_acumulado, temp_media, rad_media),
+    names_to = "Variavel_Climatica",
+    values_to = "Valor_Climatico"
+  ) |>
+  
+  # 3. Renomear labels
+  mutate(Variavel_Climatica = factor(Variavel_Climatica, 
+         labels = c("Precipitação Acumulada (mm)", 
+                    "Radiação Média (W/m²)", 
+                    "Temperatura Média (°C)"))) |>
+
+  # 4. Plotar (Y agora é SIF)
+  ggplot(aes(x = Valor_Climatico, y = daily_sif757)) +
+  
+  # Pontos (Cor verde para lembrar planta)
+  geom_point(alpha = 0.1, color = "forestgreen") +
+  
+  # Linha de tendência
+  geom_smooth(method = "lm", color = "black", size = 1) +
+  
+  facet_wrap(~ Variavel_Climatica, scales = "free_x") +
+  
+  labs(
+    title = "Resposta da Fotossíntese (SIF) ao Clima",
+    subtitle = "Relação entre variáveis climáticas e atividade da vegetação",
+    y = "SIF 757 (W/m²/sr/µm)",
+    x = "Valor da Variável Climática"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(strip.background = element_rect(fill = "gray90", color = NA))
+```
+
+```{r}
+# virar data.frame com colunas latitude/longitude + atributos
+# grid_df <- as.data.frame(grid_quadrante)           # atributos (@data)
+# coords  <- sp::coordinates(grid_quadrante)         # matriz [lon, lat]
+# grid_df$longitude <- coords[,1]
+# grid_df$latitude  <- coords[,2]
+# 
+# # (opcional) padronizar casas decimais para evitar mismatch por flutuação
+# kgr_maps  <- kgr_maps  |> mutate(
+#   latitude  = round(latitude, 6),
+#   longitude = round(longitude, 6)
+# )
+# grid_df <- grid_df |> mutate(
+#   latitude  = round(latitude, 6),
+#   longitude = round(longitude, 6)
+# )
+# 
+# kgr_maps <- kgr_maps |>
+#   left_join(grid_df, by = c("latitude","longitude"))
+
+```
+
+## Padrões espaciais de XCO2 para a região por época
+```{r}
+season <- kgr_maps |> pull(year_epoca_label) |> unique()
+map(season, ~{
+  kgr_maps |> 
+    filter(year_epoca_label == .x) |> 
+    ggplot(aes(x = longitude, y = latitude)) +
+    geom_tile(aes(fill = daily_sif757)) +
+    scale_fill_viridis_c(option = "mako", direction = -1) + 
+    coord_equal() +
+    labs(x = "Longitude",
+         y = "Latitude",
+         fill = "daily_sif757",
+         title = .x) +
+    theme_bw()
+}) 
+```
+
+## Padrões espaciais de anomalia de xco2 por estação
+```{r}
+#season <- kgr_maps |> pull(year_epoca_label) |> unique()
+#map(season, ~{
+#  kgr_maps |> 
+#     filter(year_epoca_label == .x) |> 
+#     ggplot(aes(x = longitude, y = latitude)) +
+#     geom_tile(aes(fill = daily_sif757)) +
+#     scale_fill_viridis_c(option = "inferno", direction = -1) + 
+#     coord_equal() +
+#     labs(x = "Longitude",
+#          y = "Latitude",
+#          fill = "daily_sif757",
+#          title = .x) +
+#     theme_bw()
+# })
+```
+
+
+```{r}
+map(unique(kgr_maps$year_epoca_label), ~{
+  
+  # Identificar hotspots 
+  hotspots <- kgr_maps |>
+    dplyr::filter(year_epoca_label == .x) |> 
+    dplyr::slice_max(xco2_anomaly, n = 5, with_ties = FALSE) |>
+    dplyr::mutate(tipo = "hotspot")  
+  
+  coldspots <- kgr_maps |>
+    dplyr::filter(year_epoca_label == .x) |> 
+    dplyr::slice_min(xco2_anomaly, n = 5, with_ties = FALSE) |>
+    dplyr::mutate(tipo = "coldspot")  
+  
+  pontos_destaque <- dplyr::bind_rows(hotspots, coldspots)
+  
+  kgr_maps |> 
+    dplyr::filter(year_epoca_label == .x) |> 
+    ggplot2::ggplot(ggplot2::aes(x = latitude, y = longitude)) +
+    ggplot2::geom_tile(ggplot2::aes(fill = xco2_anomaly)) +
+    ggplot2::geom_point(data = pontos_destaque,
+               ggplot2::aes(x = latitude, y = longitude, color = tipo),
+               shape = 21, size = 3, fill = "white", stroke = 1.2) +
+    ggplot2::scale_color_manual(values = c("hotspot" = "red", "coldspot" = "blue")) +
+    ggplot2::geom_point(
+      data = kgr_maps |> 
+        dplyr::filter(year_epoca_label == .x, xco2_anomaly > 0) |>
+        dplyr::summarise(
+          lon_centro = sum(longitude * xco2_anomaly, na.rm = TRUE) / sum(xco2_anomaly, na.rm = TRUE),
+          lat_centro = sum(latitude  * xco2_anomaly, na.rm = TRUE) / sum(xco2_anomaly, na.rm = TRUE)
+        ),
+      ggplot2::aes(x = lat_centro, y = lon_centro),  # <- atenção: eixos estão trocados no ggplot
+      color = "cyan", size = 2.5, shape = 4, stroke = 1.2) +
+    viridis::scale_fill_viridis(option = "inferno") +
+    ggplot2::coord_equal(
+      xlim = c(-12.3561, -1.6058),   # latitude (x no seu plot)
+      ylim = c(-59.7700, -49.8361),  # longitude (y no seu plot)
+      expand = FALSE
+    ) +
+    ggplot2::facet_wrap(~ year_epoca_label) +
+    ggplot2::labs(
+      x = "Longitude", y = "Latitude", fill = "xco2_anomaly",
+      title = .x
+    ) +
+    ggplot2::theme_bw()
+})
+
+
+```
+
+## Mapa de anomalia média
+```{r}
+kgr_maps |> 
+  group_by(longitude, latitude) |> 
+  summarise(
+    anomaly_xco2_mean = mean(xco2_anomaly, na.rm=TRUE)
+  ) |> 
+  ggplot(aes(x=longitude, y=latitude)) +
+  geom_tile(aes(fill = anomaly_xco2_mean)) +
+  scale_fill_viridis_c(option = "inferno") +
+  coord_equal() +
+  labs(x="Longitude",
+       y="Latitude",
+       fill="mean_anomaly_xco2") +
+  theme_bw()
+```

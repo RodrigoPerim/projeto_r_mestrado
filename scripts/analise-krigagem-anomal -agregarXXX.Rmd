@@ -1,0 +1,246 @@
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  warning = FALSE,
+  error = FALSE,
+  message = FALSE,
+  eval = TRUE,
+  comment = "#>"
+)
+```
+
+## Carregando pacotes
+```{r}
+library(tidyverse)
+library(ggridges)
+library(ggpubr)
+library(geobr)
+library(gstat)
+library(vegan)
+library(dplyr)
+library(ggplot2)
+source("../R/my-function.R")
+```
+
+#Carregando polígono do Brasil
+```{r}
+country_br <- geobr::read_country(showProgress = FALSE)
+```
+# Carregando os dados de xco2 e filtrar
+```{r}
+
+data_set_xco2 <- readr::read_rds("../data/data-set-xco2.rds") |>
+  dplyr::filter(
+    longitude >= -59.7700 & longitude <= -49.8361,
+    latitude >= -12.3561 & latitude <= -1.6058
+  ) |>
+  dplyr::mutate(
+    time = lubridate::as_datetime(time, tz = "America/Sao_Paulo"),
+    year = lubridate::year(time),
+    month = lubridate::month(time),
+    day = lubridate::day(time),
+    
+    date = lubridate::as_date(time)
+  )
+
+
+
+
+data_set_xco2_anomal <- data_set_xco2 |>
+  dplyr::filter(xco2_quality_flag == 0) |>
+  dplyr::group_by(date) |>
+  
+  tidyr::nest() |>
+  
+  dplyr::mutate(nobs = purrr::map_int(data, nrow)) |>  
+  
+  dplyr::filter(nobs >= 5) |>
+  
+  tidyr::unnest(data) |>  
+  
+  dplyr::group_by(year, month) |> 
+  dplyr::mutate(
+    xco2_anomalia = xco2 - median(xco2, na.rm = TRUE),  # mantém sua lógica
+    .after = xco2
+  ) |> 
+  
+  dplyr::ungroup()
+
+# Visualizar estrutura
+dplyr::glimpse(data_set_xco2_anomal)
+
+# Salvar resultado
+readr::write_rds(data_set_xco2_anomal, "../data/data-set-xco2-anomalia.rds")
+
+
+```
+
+# Criando coluna de semestre
+```{r}
+data_set_xco2_anomal <- data_set_xco2_anomal %>%
+  mutate(
+    epoca = case_when(
+      month %in% 1:6   ~ "Jan_Jun",
+      month %in% 7:12  ~ "Jul_Dez"
+    )
+  )
+head(data_set_xco2)
+```
+
+# Análise da regressão linear simples para caracterização da tendencia XCO2
+```{r}
+mod_trend_xco2 <- lm(xco2 ~ year,
+                      data = data_set_xco2_anomal |>
+                        filter(xco2_quality_flag == 0) |>
+                        drop_na() |>
+                        mutate( year = year - min(year))
+ )
+```
+
+# retirando a tendencia e separando por quadrimestre, estou retirando # a tendencia e substituindo o arquivo que existia com tendencia, #para o sem tendencia
+```{r}
+ a_co2 <- mod_trend_xco2$coefficients[[1]]
+ b_co2 <- mod_trend_xco2$coefficients[[2]]
+
+ data_set_xco2_anomal_sem_tendencia <- data_set_xco2_anomal |>
+   filter(xco2_quality_flag == 0,
+          year >= 2020 & year <= 2025) |>
+   mutate(
+     year_modif = year -min(year),
+     xco2_est = a_co2+b_co2*year_modif,
+     delta = xco2_est-xco2,
+     xco2_detrend = (a_co2-delta) - (mean(xco2) - a_co2)
+   ) |>
+   select(-c( time, xco2_quality_flag,xco2_incerteza,
+             path,year_modif:delta)) |>
+   rename(xco2_tend = xco2,
+          xco2_stend= xco2_detrend) |>
+   mutate(
+     xco2_anomalia = xco2_stend - median(xco2_stend, na.rm = TRUE),
+     .after = xco2_stend
+   ) |>
+   ungroup()
+```
+
+#####################################
+AGREGAÇÃO ESPACIAL PARA DADOS GEOGRÁFICOS
+```{r}
+data_set_xco2_anomal |> 
+  ggplot2::ggplot(ggplot2::aes(x=longitude,y=latitude,col=date))+
+  ggplot2::geom_point()
+```
+
+```{r}
+xco2_agg <- data_set_xco2_anomal |>
+  dplyr::mutate(ano = lubridate::year(date),
+                mes = lubridate::month(date)) |> 
+  dplyr::group_by(longitude,latitude,ano,mes) |> 
+  dplyr::summarise(xco2 = mean(xco2))
+    
+nrow(xco2_agg) == nrow(data_set_xco2_anomal)
+```
+
+```{r}
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <- -1.6058
+
+dist_grid <- 0.25
+
+
+grid_quadrante <- expand.grid(
+  longitude = seq(min_lon, max_lon, dist_grid),
+  latitude = seq(min_lat, max_lat, dist_grid)
+)
+
+plot(grid_quadrante)
+```
+
+```{r}
+# 1) Adiciona ano/mês ao seu dataset (sem resumir)
+xco2_agg <- data_set_xco2_anomal |>
+  dplyr::mutate(
+    ano = lubridate::year(date),
+    mes = lubridate::month(date)
+  )
+
+# 2) Vetores do grid (data.frame com longitude/latitude já criado acima)
+grid_lon <- grid_quadrante$longitude
+grid_lat <- grid_quadrante$latitude
+
+for(i in 2020:2021){ # como neste exemplo só estamos utilizando dados de fev de 15 e  16
+  aux_xco2 <- xco2_agg |> # tabela auxiliar
+    dplyr::filter(ano==i)
+  vct_xco2 <- vector();dist_xco2 <- vector(); # vetores vazios necessarios
+  grid_lon <- vector();grid_lat <- vector();
+  for(k in 1:nrow(aux_xco2)){
+    d <- sqrt((aux_xco2$longitude[k]-grid_quadrante$longitude)^2+  # calculo da distancia entre as obs e o grid
+                (aux_xco2$latitude[k]-grid_quadrante$latitude)^2
+              )
+    min_index <- order(d)[1]
+    vct_xco2[k] <- aux_xco2$xco2[min_index]
+    dist_xco2[k] <- d[order(d)[1]]
+    grid_lon[k] <- grid_quadrante$longitude[min_index]
+    grid_lat[k] <- grid_quadrante$latitude[min_index]
+  }
+   aux_xco2$dist_xco2 <- dist_xco2
+  aux_xco2$xco2_new <- vct_xco2
+  aux_xco2$grid_lon <- grid_lon
+  aux_xco2$grid_lat <- grid_lat
+  if(i == 2020){
+    xco2_agg_novo <- aux_xco2
+  }else{
+    xco2_agg_novo <- rbind(xco2_agg_novo,aux_xco2)
+  }
+}
+```
+
+```{r}
+xco2_agg_novo |>
+  dplyr::mutate(
+    dist_conf = sqrt((longitude - grid_lon)^2 + (latitude - grid_lat)^2)
+  ) |>
+  dplyr::glimpse()
+```
+
+
+
+```{r}
+nrow(xco2_agg_novo |>
+  dplyr::mutate(
+    dist_conf = sqrt((longitude - grid_lon)^2 + (latitude - grid_lat)^2),
+    dist_bol = dist_xco2 - dist_conf
+  ) |> 
+  dplyr::filter(dist_bol ==0)) == nrow(xco2_agg_novo)
+```
+
+```{r}
+xco2_agg_novo |> 
+  dplyr::filter(dist_xco2<0.15) |>
+  dplyr::group_by(grid_lon,grid_lat,ano,mes) |> # agora podemos agregar os dados pelas coordenadas do grid
+  dplyr::summarise(
+    xco2_mean = mean(xco2_new),
+    xco2_incerteza = mean(xco2_incerteza),
+    xco2_sd = sd(xco2_new),
+    nobs = dplyr::n(),
+    xco2_se = xco2_sd/sqrt(nobs))
+```
+
+
+```{r}
+xco2_agg_novo |>
+  dplyr::filter(dist_xco2<0.15) |> # distancia maxima desejada
+  dplyr::group_by(grid_lon,grid_lat,ano,mes) |> # agora podemos agregar os dados pelas coordenadas do grid
+  dplyr::summarise(
+    xco2_mean = mean(xco2_new),
+    xco2_incerteza = mean(xco2_incerteza),
+    xco2_sd = sd(xco2_new),
+    nobs = dplyr::n(),
+    xco2_se = xco2_sd/sqrt(nobs)
+  ) |>
+  ggplot2::ggplot(ggplot2::aes(x=grid_lon,y=grid_lat,col=xco2_mean))+
+  ggplot2::geom_point()
+```
+

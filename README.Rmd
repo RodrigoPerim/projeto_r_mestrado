@@ -1,0 +1,92 @@
+---
+output: github_document
+---
+
+<!-- README.md is generated from README.Rmd. Please edit that file -->
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  message = FALSE,
+  error = FALSE,
+  warning = FALSE,
+  eval=FALSE,
+  comment = "#>"
+)
+```
+
+# Projeto Mestrado - Rodrigo Perim
+## 👨‍🔬 Autores
+
+-   **Rodrigo Baratiere Perim**\
+    Mestrando em Agronomia (Ciência do Solo) - FCAV/Unesp\
+    Email: [odrigo.perim\@unesp.br](mailto:rodrigo.perim@unesp.br)
+
+
+-   **Prof. Dr. Alan Rodrigo Panosso**\
+    Coorientador — Departamento de Ciências Exatas - FCAV/Unesp\
+    Email: [alan.panosso\@unesp.br](mailto:alan.panosso@unesp.br)
+
+## 📁 Etapas do Projeto
+
+
+### ⬇️ Aquisição dos dados brutos
+
+ - **Aquisição e download dos dados brutos** 
+[OCO-2 e OCO-3](https://disc.gsfc.nasa.gov):
+   
+    
+    
+### 🔗 Links para Download dos dados compilados:
+
+| Dados Processados Para Download
+| :---: 
+| [data-set-xco2.rds](https://drive.google.com/file/d/1E6oYKw7WyBRcgLaiFlPP1-ZTXTG4QO-2/view?usp=sharing)  ⬇️  
+| [data-set-sif.rds](https://drive.google.com/file/d/1Tvy4T2O3YwY9sQwvHnDD3sZWkoqvwZbw/view?usp=sharing)  ⬇️ 
+| [faxina-de-dados.R](https://raw.githubusercontent.com/arpanosso/projeto-mestrado-perim/refs/heads/master/data-raw/faxina-de-dados.R)
+
+Formato dos arquivos:
+
+ > .rds (formato nativo do R para carregamento rápido)
+ 
+ > salve os arquivos na pasta `data` do projeto
+ 
+### 🧹 Faxina de dados
+
+
+#### Carregando os polígonos do Brasil
+
+```{r}
+country_br <- geobr::read_country(showProgress = FALSE)
+```
+
+
+#### Carregando os dados
+
+```{r}
+data_set_xco2 <- readr::read_rds("data/data-set-xco2.rds") |> 
+  dplyr::mutate(
+    time = lubridate::as_datetime(time, tz = "America/Sao_Paulo"),
+    year = lubridate::year(time),
+    month = lubridate::month(time),
+    day = lubridate::day(time),
+  )
+dplyr::glimpse(data_set_xco2)
+```
+
+
+```{r}
+data_set_sif <- readr::read_rds("data/data-set-sif.rds") |> 
+  dplyr::mutate(
+    time = lubridate::as_datetime(time, 
+                                  origin = "1990-01-01 00:00:00",
+                                  tz = "America/Sao_Paulo"),
+    year = lubridate::year(time),
+    month = lubridate::month(time),
+    day = lubridate::day(time),
+  )
+dplyr::glimpse(data_set_sif)
+```
+
+
+

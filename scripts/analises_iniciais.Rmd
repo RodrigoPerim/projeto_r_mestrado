@@ -1,0 +1,847 @@
+
+
+## Carregando pacotes
+```{r}
+library(tidyverse)
+library(ggridges)
+library(ggpubr)
+library(geobr)
+library(gstat)
+library(vegan)
+library(dplyr)
+library(ggplot2)
+```
+
+#Carregando polígono do Brasil
+```{r}
+country_br <- geobr::read_country(showProgress = FALSE)
+```
+# Carregando os dados de xco2 e filtrar
+```{r}
+
+data_set_xco2 <- readr::read_rds("../data/data-set-xco2.rds") |>
+  dplyr::filter(
+    longitude >= -59.7700 & longitude <= -49.8361,
+    latitude >= -12.3561 & latitude <= -1.6058
+  ) |>
+  dplyr::mutate(
+    time = lubridate::as_datetime(time, tz = "America/Sao_Paulo"),
+    year = lubridate::year(time),
+    month = lubridate::month(time),
+    quarter = lubridate::quarter(time),
+    day = lubridate::day(time),
+    
+    date = lubridate::as_date(time),
+    quarter = paste0("Q", lubridate::quarter(time))
+  )
+
+
+data_set_xco2_anomal <- data_set_xco2 |>
+  
+  dplyr::filter(xco2_quality_flag == 0) |>
+  
+  dplyr::group_by(year, quarter) |>
+  
+  tidyr::nest() |>
+  
+  dplyr::mutate(nobs = purrr::map_int(data, nrow)) |>
+  
+  dplyr::filter(nobs >= 5) |>
+  
+  dplyr::ungroup() |>
+  
+  dplyr::mutate(
+    data = purrr::map(data, ~ dplyr::mutate(.x, xco2_anomalia = .x$xco2 - median(.x$xco2, na.rm = TRUE)))
+  ) |>
+  
+  tidyr::unnest(data)
+
+dplyr::glimpse(data_set_xco2_anomal)
+
+readr::write_rds(data_set_xco2_anomal, "../data/data-set-xco2-anomalia.rds")
+```
+
+
+
+# Carregando os dados de SIF
+```{r}
+data_set_sif <- readr::read_rds("../data/data-set-sif.rds") |>
+  dplyr::filter(
+    longitude >=-59.7700 & longitude <= -49.8361,
+    latitude >=-12.3561 & latitude <= -1.6058
+  ) |>
+  dplyr::mutate(
+    time = lubridate::as_datetime(time,
+                                  origin = "1990-01-01 00:00:00",
+                                  tz = "America/Sao_Paulo"),
+    year = lubridate::year(time),
+    month = lubridate::month(time),
+    day = lubridate::day(time),
+  )
+dplyr::glimpse(data_set_sif)
+readr::write_rds(data_set_sif,"../data/data-set-sif-filter.rds")
+```
+
+# Criando coluna de semestre
+```{r}
+data_set_xco2_anomal <- data_set_xco2_anomal %>%
+  mutate(
+    epoca = case_when(
+      month %in% 1:6   ~ "Jan_Jun",
+      month %in% 7:12  ~ "Jul_Dez"
+    )
+  )
+head(data_set_xco2)
+```
+
+# Visualização de Histograma xco2
+```{r}
+data_set_xco2 |>
+  dplyr::filter(year <2025) |>
+  ggplot2::ggplot(ggplot2::aes(x=xco2)) +
+  ggplot2::geom_histogram(color="black",fill="gray",
+                          bins = 30) +
+  ggplot2::coord_cartesian(xlim = c(395, 435) , ylim = c(0, 70000))+
+  ggplot2::facet_wrap(~year, scales = "free") +
+  ggplot2::theme_bw()
+```
+
+# Visualização de Histograma SIF
+```{r}
+data_set_sif |>
+  dplyr::filter(year <2025) |>
+  ggplot2::ggplot(ggplot2::aes(x=daily_sif757)) +
+  ggplot2::geom_histogram(color="black",fill="gray",
+                          bins = 30) +
+  ggplot2::coord_cartesian(xlim = c(-2, 2) , ylim = c(0, 350000))+
+  ggplot2::facet_wrap(~year, scales = "free") +
+  ggplot2::theme_bw()
+```
+
+# Tendencia regional, r2 e plotagem de gráfico
+```{r}
+data_set_xco2_anomal |>
+ sample_n(10000) |>
+ drop_na() |>
+ mutate( year = year - min(year)) |>
+ ggplot(aes(x=year, y=xco2)) +
+ geom_point() +
+ geom_point(shape=21,color="black",fill="gray") +
+ geom_smooth(method = "lm") +
+ stat_regline_equation(aes(
+ label =  paste(..eq.label.., ..rr.label.., sep = "*plain(\",\")~~"))) +
+ theme_bw() +
+ labs(x="Ano",y="xco2")
+```
+
+# Análise da regressão linear simples para caracterização da tendencia XCO2
+```{r}
+mod_trend_xco2 <- lm(xco2 ~ year,
+                      data = data_set_xco2_anomal |>
+                        filter(xco2_quality_flag == 0) |>
+                        drop_na() |>
+                        mutate( year = year - min(year))
+ )
+ mod_trend_xco2
+
+ summary.lm(mod_trend_xco2)
+```
+
+# retirando a tendencia e separando por quadrimestre, estou retirando # a tendencia e substituindo o arquivo que existia com tendencia, #para o sem tendencia
+```{r}
+ a_co2 <- mod_trend_xco2$coefficients[[1]]
+ b_co2 <- mod_trend_xco2$coefficients[[2]]
+
+ data_set_xco2_anomal_sem_tendencia <- data_set_xco2_anomal |>
+   filter(xco2_quality_flag == 0,
+          year >= 2020 & year <= 2025) |>
+   mutate(
+     year_modif = year -min(year),
+     xco2_est = a_co2+b_co2*year_modif,
+     delta = xco2_est-xco2,
+     xco2_detrend = (a_co2-delta) - (mean(xco2) - a_co2)
+   ) |>
+   select(-c( time, xco2_quality_flag,xco2_incerteza,
+             path,year_modif:delta)) |>
+   rename(xco2_trend = xco2,
+          xco2 = xco2_detrend) |>
+   mutate(
+     xco2_anomalia = xco2 - median(xco2, na.rm = TRUE),
+     .after = xco2
+   ) |>
+   ungroup()
+```
+
+
+# Visualização de Histograma Anomalia de XCO2
+```{r}
+data_set_xco2_anomal_sem_tendencia |>
+  dplyr::filter(year <2025) |>
+  ggplot2::ggplot(ggplot2::aes(x=xco2_anomalia)) +
+  ggplot2::geom_histogram(color="black",fill="gray",
+                          bins = 30) +
+  # ggplot2::coord_cartesian(xlim = c(-2, 2) , ylim = c(0, 350000))+
+  ggplot2::facet_wrap(~year, scales = "free")+
+  theme_bw()
+```
+ 
+
+ # Plotando gráfico da distribuição de xco2 com tendencia por ano
+ # separado por semestre
+
+```{r}
+data_set_xco2_anomal %>%
+
+   ggplot(aes(x = xco2, y = as.factor(year), fill = epoca)) +
+
+   geom_density_ridges(
+     rel_min_height = 0.03,
+     alpha = .6,
+     color = "black"
+   ) +
+
+   scale_fill_viridis_d(name = "Epoca") +
+   coord_cartesian(xlim = c(405, 425)) +
+   theme_ridges() +
+
+   labs(
+     # title = "Distribuição Epoca de XCO₂ por Ano",
+     x = expression(paste(CO[2]," (ppm)")),
+     y = "Ano"
+   )
+```
+ 
+ # Plotando gráfico da distribuição de xco2 sem tendencia por ano
+ # separado por semestre
+```{r}
+data_set_xco2_anomal_sem_tendencia %>%
+
+   ggplot(aes(x = xco2, y = as.factor(year), fill = epoca)) +
+
+   geom_density_ridges(
+     rel_min_height = 0.03,
+     alpha = .6,
+     color = "black"
+   ) +
+
+   scale_fill_viridis_d(name = "Epoca") +
+   coord_cartesian(xlim = c(400, 415)) +
+   theme_ridges() +
+
+   labs(
+     title = "Distribuição Epoca de XCO₂ por Ano",
+     x = "Concentração de XCO₂ (ppm)",
+     y = "Ano"
+   )
+```
+ 
+  # Anomalia de xco2, criando a coluna.
+```{r}
+#data_set_xco2_com_tendencia <- data_set_xco2 %>%
+#
+#   filter(xco2_quality_flag == 0,
+#         year >= 2020 & year <= 2025) %>%
+#
+#  group_by(year, month) %>% #MON
+#
+#   mutate(
+#     xco2_anomaly = xco2 - median(xco2, na.rm = TRUE)
+#   ) %>%
+#
+#  ungroup()
+```
+  
+ # Anomalia de xco2 com tendencia
+```{r}
+data_set_xco2_anomal %>%
+   ggplot(aes(x = xco2_anomalia, y = as.factor(year), fill = epoca)) +
+
+   geom_density_ridges(
+     rel_min_height = 0.03,
+     alpha = .6,
+     color = "black"
+   ) +
+     geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+
+     scale_fill_manual(
+       name = "Epoca",
+       values = c(
+         "Chuvosa. (Jan-Jun)" = "blue", # Tom de roxo/lilás
+         "Seca. (Jul-Dez)" = "yellow"  # Tom de amarelo claro
+       )
+     ) +
+  coord_cartesian(xlim = c(-5, 5))+
+  theme_ridges()
+```
+ 
+# Anomalia de xco2 sem tendencia
+```{r}
+data_set_xco2_anomal_sem_tendencia %>%
+    ggplot(aes(x = xco2_anomalia, y = as.factor(year), fill = epoca)) +
+
+    geom_density_ridges(
+      rel_min_height = 0.03,
+      alpha = .6,
+      color = "black"
+    ) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+
+    scale_fill_manual(
+      name = "Epoca",
+      values = c(
+        "Chuvosa. (Jan-Jun)" = "blue",
+        "Seca. (Jul-Dez)" = "yellow"
+      )
+    ) +
+    coord_cartesian(xlim = c(-5, 5))+
+  theme_ridges()
+```
+
+# Observando dados de anomalia
+```{r}
+ dados_temporais_epoca <- data_set_xco2_anomal %>%
+  mutate(
+      epoca = case_when(
+        month %in% 1:6  ~ "Chuvosa (Jan-Jun)",
+        month %in% 7:12 ~ "Seca (Jul-Dez)"
+      )
+    ) %>%
+  mutate(
+      epoca = factor(epoca, levels = c("Chuvosa (Jan-Jun)", "Seca (Jul-Dez)"))
+    ) %>%
+  group_by(year, epoca) %>%
+  summarise(
+      anomalia_media = mean(xco2_anomalia, na.rm = TRUE),
+      desvio_padrao = sd(xco2_anomalia, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+  mutate(
+      mes_representativo = case_when(
+        epoca == "Chuvosa (Jan-Jun)" ~ 3,
+        epoca == "Seca (Jul-Dez)"    ~ 9
+      ),
+      data = as.Date(paste(year, mes_representativo, "15", sep = "-"))
+    )
+print(dados_temporais_epoca)
+```
+
+#Estatistica do xco2 - com tendencia
+```{r}
+
+dados_xco2_mensais <- data_set_xco2_anomal %>%
+  group_by(year, quarter) %>%
+  summarise(
+    xco2_media = mean(xco2, na.rm = TRUE),
+    xco2_sd = sd(xco2, na.rm = TRUE),
+    .groups = "drop"  
+  ) %>%
+  mutate(
+    data = as.Date(paste(year, quarter, "15", sep = "-")),
+    epoca = case_when(
+      Q1 %in% 1:3  ~ "Q1",
+      Q2 %in% 4:6 ~ "Q2",
+      Q3 %in% 7:9  ~ "Q3",
+      Q4 %in% 10:12 ~ "Q4"
+    ),
+    epoca = factor(epoca, levels = c("Q1", "Q2", "Q3", "Q4"))
+  ) %>%
+  arrange(data)
+
+ggplot(dados_xco2_mensais, aes(x = data, y = xco2_media, color = epoca, fill = epoca)) +
+  
+  geom_ribbon(aes(ymin = xco2_media - xco2_sd, ymax = xco2_media + xco2_sd), alpha = 0.3, color = NA) +
+  
+  geom_line(linewidth = 1) +
+  
+  geom_point(size = 2.5) +
+  
+
+  scale_x_date(
+    breaks = "1 year",  
+    date_labels = "%b %Y"
+  ) +
+  
+  labs(
+    title = "Série Temporal Mensal de XCO₂ com tendencia",
+    subtitle = "Média e Desvio Padrão para cada mês, com cores por época",
+    x = "Data",
+    y = "Concentração Média de XCO₂ (ppm)",
+    color = "Época",
+    fill = "Época"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+ #Estatistica do xco2 - SEM tendencia
+```{r}
+
+dados_xco2_mensais <- data_set_xco2_anomal_sem_tendencia %>%
+  group_by(year, month) %>%
+  summarise(
+    xco2_media = mean(xco2, na.rm = TRUE),
+    xco2_sd = sd(xco2, na.rm = TRUE),
+    .groups = "drop"  
+  ) %>%
+  mutate(
+    data = as.Date(paste(year, month, "15", sep = "-")),
+    epoca = case_when(
+      month %in% 1:6  ~ "Chuvosa (Jan-Jun)",
+      month %in% 7:12 ~ "Seca (Jul-Dez)"
+    ),
+    epoca = factor(epoca, levels = c("Chuvosa (Jan-Jun)", "Seca (Jul-Dez)"))
+  ) %>%
+  arrange(data)
+
+ggplot(dados_xco2_mensais, aes(x = data, y = xco2_media, color = epoca, fill = epoca)) +
+  
+  geom_ribbon(aes(ymin = xco2_media - xco2_sd, ymax = xco2_media + xco2_sd), alpha = 0.3, color = NA) +
+  
+  geom_line(linewidth = 1) +
+  
+  geom_point(size = 2.5) +
+  
+  scale_color_manual(values = c("Chuvosa (Jan-Jun)" = "blue", "Seca (Jul-Dez)" = "orange")) +
+  scale_fill_manual(values = c("Chuvosa (Jan-Jun)" = "blue", "Seca (Jul-Dez)" = "orange")) +
+  
+  scale_x_date(
+    breaks = "1 year",  
+    date_labels = "%b %Y"
+  ) +
+  
+  labs(
+    title = "Série Temporal Mensal de XCO₂ SEM tendencia",
+    subtitle = "Média e Desvio Padrão para cada mês, com cores por época",
+    x = "Data",
+    y = "Concentração Média de XCO₂ (ppm)",
+    color = "Época",
+    fill = "Época"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+ 
+ 
+#####
+AGORA COMEÇA O SEMIVARIOGRAMA E A KRIGAGEM DOS GURI
+ 
+ 
+## Criando e filtrando o grid da área de estudo
+```{r}
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <- -1.6058
+
+
+dist_grid <- 0.20
+
+
+grid_quadrante <- expand.grid(
+  longitude = seq(min_lon, max_lon, dist_grid),
+  latitude = seq(min_lat, max_lat, dist_grid)
+)
+
+ ggplot(grid_quadrante, aes(x = longitude, y = latitude)) +
+   geom_point(size = 0.1, color = "blue") +
+   ggtitle("Grid de Pontos para a Área de Estudo") +
+   theme_minimal() +
+   coord_equal()
+
+
+
+readr::write_rds(grid_quadrante, "C:/Users/RODRIGO/Desktop/Projeto R mestrado/data/grid_quadrante.rds")
+
+glimpse(grid_quadrante)
+```
+
+
+```{r}
+df_aux_geo <- data_set_xco2_anomal |> 
+  filter(year == 2020,
+         epoca == "Jan_Jun") |> 
+  select(longitude, latitude, xco2)
+
+df_aux_geo |> 
+  ggplot(aes(x=longitude, y=latitude)) + 
+  geom_point()
+  
+```
+
+
+## Construindo o semivariograma experimental
+```{r}
+sp_data <- sp::SpatialPointsDataFrame(
+  coords = df_aux_geo[, c("longitude", "latitude")],
+  data = df_aux_geo[, "xco2"]
+)
+
+
+names(sp_data) <- c("xco2")
+```
+
+
+```{r}
+variograma_exp <- gstat::variogram(
+  object = xco2 ~ 1,
+  locations = sp_data,  
+  cressie = FALSE,
+  cutoff = 5,
+  width = .25
+)
+
+
+ggplot(variograma_exp, aes(x = dist, y = gamma)) +
+  geom_point(size = 3, color = "darkblue") +
+  labs(
+    x = "Distância de Separação (graus)",
+    y = "Semivariância",
+    title = "Semivariograma Experimental do XCO₂"
+  ) +
+  theme_minimal() +
+  geom_hline(yintercept = var(sp_data$xco2, na.rm = TRUE), linetype = "dashed", color = "red") +
+  annotate("text", x = 1.8, y = var(sp_data$xco2, na.rm = TRUE) + 0.1, label = "Variância da Amostra", color = "red", size = 4)
+
+
+readr::write_rds(variograma_exp,"C:/Users/RODRIGO/Desktop/Projeto R mestrado/data/semivariograma_exp.rds")
+```
+## Ajuste de Modelos Teóricos ao Semivariograma Experimental
+```{r}
+
+
+variograma_exp <- readr::read_rds("C:/Users/RODRIGO/Desktop/Projeto R mestrado/data/semivariograma_exp.rds")
+
+
+
+modelos_validos_ajuste <- list()
+
+modelo_esferico <- gstat::fit.variogram(variograma_exp, vgm(psill = NA, model = "Sph", range = NA, nugget = NA))
+if (!is.null(modelo_esferico) && !is.na(attr(modelo_esferico, "SSErr"))) {
+  modelos_validos_ajuste$esferico <- modelo_esferico
+}
+
+modelo_exponencial <- gstat::fit.variogram(variograma_exp, vgm(psill = NA, model = "Exp", range = NA, nugget = NA))
+if (!is.null(modelo_exponencial) && !is.na(attr(modelo_exponencial, "SSErr"))) {
+  modelos_validos_ajuste$exponencial <- modelo_exponencial
+}
+
+modelo_gaussiano <- gstat::fit.variogram(variograma_exp, vgm(psill = NA, model = "Gau", range = NA, nugget = NA))
+if (!is.null(modelo_gaussiano) && !is.na(attr(modelo_gaussiano, "SSErr"))) {
+  modelos_validos_ajuste$gaussiano <- modelo_gaussiano
+}
+
+if (length(modelos_validos_ajuste) == 0) {
+  stop("Nenhum modelo teórico pôde ser ajustado com sucesso. A estrutura dos dados pode ser complexa.")
+}
+
+curvas_seguras <- purrr::map(modelos_validos_ajuste, purrr::safely(~gstat::variogramLine(.x, dist_vector = variograma_exp$dist)$gamma))
+
+nomes_validos <- names(purrr::keep(curvas_seguras, ~is.null(.x$error)))
+
+modelos_curvas <- purrr::map_dfc(curvas_seguras, "result") %>%
+  set_names(nomes_validos) 
+
+modelos_ajustados <- tibble(dist = variograma_exp$dist) |>
+  bind_cols(modelos_curvas) |>
+  pivot_longer(cols = -dist, names_to = "Modelo", values_to = "gamma")
+
+ggplot(variograma_exp, aes(x = dist, y = gamma)) +
+  geom_point(size = 3, color = "darkblue") +
+  geom_line(data = modelos_ajustados, aes(x = dist, y = gamma, color = Modelo), linewidth = 1) +
+  labs(
+    x = "Distância de Separação (graus)",
+    y = "Semivariância",
+    title = "Ajuste de Modelos Teóricos ao Semivariograma Experimental",
+    color = "Modelo"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("esferico" = "red", "exponencial" = "green", "gaussiano" = "purple"))
+
+readr::write_rds(modelos_validos_ajuste, "C:/Users/RODRIGO/Desktop/Projeto R mestrado/data/modelos_ajustados_validos.rds")
+```
+
+
+##4 validação cruzado e escolha do melhor modelo
+```{r}
+library(gstat)
+library(dplyr)
+library(sp)
+library(ggplot2)
+library(readr)
+library(purrr)
+library(tibble)
+
+
+df_aux_geo <- data_set_xco2_anomal
+
+sp_data <- sp::SpatialPointsDataFrame(
+  coords = data_set_analise[, c("longitude", "latitude")],
+  data = data_set_analise[, "xco2"]
+)
+names(sp_data) <- c("xco2")
+
+modelos_validos_ajuste <- readr::read_rds("C:/Users/RODRIGO/Desktop/Projeto R mestrado/data/modelos_ajustados_validos.rds")
+
+
+modelos <- list(
+  "Esférico" = modelos_validos_ajuste$esferico,
+  "Exponencial" = modelos_validos_ajuste$exponencial
+)
+
+
+modelos <- purrr::discard(modelos, is.null)
+
+
+for (j in seq_along(modelos)) {
+  modelo_nome <- names(modelos)[j]
+  modelo <- modelos[[j]]
+
+  
+  conjunto_validacao <- sp_data |> as_tibble() |> sample_n(50)
+  sp::coordinates(conjunto_validacao) = ~longitude + latitude
+
+  
+  est <- numeric(nrow(conjunto_validacao))
+
+  
+  for (i in 1:nrow(conjunto_validacao)) {
+    valid <- gstat::krige(
+      formula = xco2 ~ 1,
+      conjunto_validacao[-i, ],   
+      conjunto_validacao[i, ],    
+      model = modelo
+    )
+    est[i] <- valid$var1.pred[1]
+  }
+
+  obs <- conjunto_validacao$xco2 
+
+  
+  RMSE <- round(sqrt(mean((obs - est)^2, na.rm = TRUE)), 3)
+  mod <- lm(obs ~ est)
+  b <- round(mod$coefficients[2], 3)
+  r2 <- round(summary(mod)$r.squared, 3)
+  a <- round(mod$coefficients[1], 3)
+
+
+  plot(
+    est, obs,
+    xlab = "Valor Estimado (ppm)",
+    ylab = "Valor Observado (ppm)",
+    pch = 16,
+    col = "blue",
+    main = paste(
+      "Validação Cruzada para o Modelo", modelo_nome, "\n",
+      "R² =", r2, "; RMSE =", RMSE, "\n",
+      "Coef. Reg. (b) =", b, "; Intercepto (a) =", a
+    )
+  )
+  abline(mod, col = "red", lty = 2) 
+  abline(0, 1, col = "black", lty = 1) 
+}
+
+
+```
+
+
+
+#####################
+#####################
+
+#Semivariograma e Krigagem dos GURI deu errado! Bora p IDW (Inverso da distância ponderada)
+
+```{r}
+library(dplyr)
+library(readr)
+library(sp)
+library(ggplot2)
+
+min_lon <- -59.7700
+max_lon <- -49.8361
+min_lat <- -12.3561
+max_lat <- -1.6058
+
+dist_grid <- 0.10
+
+grid_quadrante <- expand.grid(
+  longitude = seq(min_lon, max_lon, dist_grid),
+  latitude = seq(min_lat, max_lat, dist_grid)
+)
+
+if (!dir.exists("data")) {
+  dir.create("data")
+}
+readr::write_rds(grid_quadrante, "data/grid_quadrante.rds")
+
+glimpse(grid_quadrante)
+```
+
+```{r}
+library(gstat)
+library(sp)
+library(readr)
+library(dplyr)
+library(ggplot2)
+
+data_set_analise <- data_set_xco2_anomal
+
+grid_quadrante <- readr::read_rds("data/grid_quadrante.rds")
+
+sp_data <- sp::SpatialPointsDataFrame(
+  coords = data_set_analise[, c("longitude", "latitude")],
+  data = data_set_analise[, "xco2"]
+)
+names(sp_data) <- c("xco2")
+
+sp::coordinates(grid_quadrante) = ~longitude + latitude
+
+idw_xco2 <- gstat::idw(
+  formula = xco2 ~ 1,
+  locations = sp_data,
+  newdata = grid_quadrante,
+  idp = 2.0
+)
+
+readr::write_rds(idw_xco2, "data/idw_xco2.rds")
+
+glimpse(idw_xco2)
+```
+
+```{r}
+library(ggplot2)
+library(readr)
+library(dplyr)
+library(tidyr)
+
+idw_xco2 <- readr::read_rds("data/idw_xco2.rds")
+
+idw_df <- as.data.frame(idw_xco2)
+
+ggplot(idw_df, aes(x = longitude, y = latitude, fill = var1.pred)) +
+  geom_tile() +
+  scale_fill_viridis_c(
+    option = "plasma",
+    name = expression(paste("Concentração de ", CO[2], " (ppm)"))
+  ) +
+  labs(
+    title = "Mapa de Interpolação IDW do XCO₂",
+    x = "Longitude",
+    y = "Latitude"
+  ) +
+  coord_equal() +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+
+ggsave(
+  "mapa_idw_xco2.png",
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+```
+
+```{r}
+library(dplyr)
+library(readr)
+library(sp)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+
+library(dplyr)
+library(readr)
+library(sp)
+library(ggplot2)
+library(tidyr)
+library(purrr)
+
+data_set_analise <- data_set_xco2_anomal
+
+data_set_analise <- data_set_analise %>%
+  mutate(
+    longitude = as.numeric(as.character(longitude)),
+    latitude = as.numeric(as.character(latitude)),
+    xco2 = as.numeric(as.character(xco2))
+  ) %>%
+  na.omit()
+
+grid_quadrante <- readr::read_rds("data/grid_quadrante.rds")
+sp::coordinates(grid_quadrante) <- ~longitude + latitude
+
+anos <- 2020:2024
+epocas <- c("jan_jun", "jul_dez")
+
+for (ano in anos) {
+  for (epoca in epocas) {
+    
+    dados_filtrados <- data_set_analise %>%
+      filter(year == ano, epoca == epoca) %>%
+      na.omit()
+    
+    if (nrow(dados_filtrados) == 0) {
+      cat("Não há dados para o ano", ano, "e época", epoca, "\n")
+      next
+    }
+    
+    sp_dados <- sp::SpatialPointsDataFrame(
+      coords = dados_filtrados[, c("longitude", "latitude")],
+      data = dados_filtrados[, "xco2", drop = FALSE]
+    )
+    names(sp_dados) <- c("xco2")
+    
+    idw_result <- gstat::idw(
+      formula = xco2 ~ 1,
+      locations = sp_dados,
+      newdata = grid_quadrante,
+      idp = 2.0
+    )
+    
+    idw_df <- as.data.frame(idw_result) %>%
+      mutate(
+        ano = ano,
+        epoca = epoca
+      )
+    
+    mapa_plot <- ggplot(idw_df, aes(x = longitude, y = latitude, fill = var1.pred)) +
+      geom_tile() +
+      scale_fill_viridis_c(
+        option = "plasma",
+        name = expression(paste("Concentração de ", CO[2], " (ppm)"))
+      ) +
+      labs(
+        title = paste("Mapa de Interpolação IDW do XCO₂ - ", ano, " (", epoca, ")", sep = ""),
+        x = "Longitude",
+        y = "Latitude"
+      ) +
+      coord_equal() +
+      theme_minimal() +
+      theme(
+        legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5, face = "bold")
+      )
+    
+    nome_arquivo <- paste("mapa_idw_", ano, "_", epoca, ".png", sep = "")
+    ggsave(
+      filename = nome_arquivo,
+      plot = mapa_plot,
+      width = 8,
+      height = 8,
+      dpi = 300
+    )
+    
+    cat("Mapa salvo: ", nome_arquivo, "\n")
+  }
+}
+
+cat("Todos os mapas foram gerados com sucesso e salvos na sua pasta de trabalho.\n")
+```
+
