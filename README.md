@@ -7,7 +7,11 @@
 
 - **Rodrigo Baratiere Perim**  
   Mestrando em Agronomia (Ciência do Solo) - FCAV/Unesp  
-  Email: [odrigo.perim@unesp.br](mailto:rodrigo.perim@unesp.br)
+  Email: <rodrigo.perim@unesp.br>
+
+- **Newton La Scala Junior**  
+  Orientador - Departamento de Ciências Exatas - FCAV/Unesp  
+  Email: <la.scala@unesp.br>
 
 - **Prof. Dr. Alan Rodrigo Panosso**  
   Coorientador — Departamento de Ciências Exatas - FCAV/Unesp  
@@ -25,8 +29,14 @@
 | Dados Processados Para Download |
 |:--:|
 | [data-set-xco2.rds](https://drive.google.com/file/d/1E6oYKw7WyBRcgLaiFlPP1-ZTXTG4QO-2/view?usp=sharing) ⬇️ |
-| [data-set-sif.rds](https://drive.google.com/file/d/1Tvy4T2O3YwY9sQwvHnDD3sZWkoqvwZbw/view?usp=sharing) ⬇️ |
-| [faxina-de-dados.R](https://raw.githubusercontent.com/arpanosso/projeto-mestrado-perim/refs/heads/master/data-raw/faxina-de-dados.R) |
+
+[data-set-sif.rds](https://drive.google.com/file/d/1Tvy4T2O3YwY9sQwvHnDD3sZWkoqvwZbw/view?usp=sharing)
+⬇️
+
+[faxina-de-dados.R](https://raw.githubusercontent.com/arpanosso/projeto-mestrado-perim/refs/heads/master/data-raw/faxina-de-dados.R)⬇️
+
+\[data_base(xco2, sif, nasapower e mapbiomas)\]
+(<https://drive.google.com/drive/folders/1uBEJcUm2H9R5xLDIBoGUMcFGz3Mwmmqd?usp=drive_link>)
 
 Formato dos arquivos:
 

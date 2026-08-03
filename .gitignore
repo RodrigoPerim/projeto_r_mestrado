@@ -5,9 +5,15 @@
 .DS_Store
 .quarto
 /data
-/data-raw
+/data-raw_n_subir
 /escrita-artigo
 /Apresentação
 *.RData
 *.RData
 *.rds
+**/data_n_subir
+**/data_mapbiomas_n_subir
+**/data_nasa_power_n_subir
+**/krigagem_n_subir
+**/script_nao_util
+**/shapes_n_subir
