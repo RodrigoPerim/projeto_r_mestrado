@@ -11,9 +11,9 @@
 *.RData
 *.RData
 *.rds
-**/data_n_subir
-**/data_mapbiomas_n_subir
-**/data_nasa_power_n_subir
-**/krigagem_n_subir
-**/script_nao_util
-**/shapes_n_subir
+/script/data_n_subir
+/script/data_mapbiomas_n_subir
+/script/data_nasa_power_n_subir
+/script/krigagem_n_subir
+/script/script_nao_util
+/script/shapes_n_subir
