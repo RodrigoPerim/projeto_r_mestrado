@@ -12,6 +12,7 @@ library(dplyr)
 library(ggplot2)
 ```
 
+
 #Carregando polígono do Brasil
 ```{r}
 country_br <- geobr::read_country(showProgress = FALSE)
